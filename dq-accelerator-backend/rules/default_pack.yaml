@@ -1,0 +1,431 @@
+# =========================================================================
+# Default rule pack
+#
+# Rules are DECLARATIVE CONFIGURATION, not code. This is the single design
+# decision that makes later phases additive rather than a rewrite:
+#
+#   Phase 1 (now)  this pack, written from industry experience
+#   Phase 2        client-specific packs overlaid on this one, plus a
+#                  `remediation:` block on each rule describing the fix
+#   Phase 3        packs proposed by an agent from data samples
+#
+# The execution engine never changes across those phases.
+#
+# FIELDS
+#   id          stable identifier; expanded per column as ID-01, ID-02 ...
+#   name        shown in the dimension drawer
+#   dimension   one of the six in dqa/config.py DIMENSIONS
+#   check       a registered check (dqa/checks/*)
+#   severity    high | medium | low -- weights the dimension score 3/2/1
+#   applies_to  which columns this binds to
+#   params      passed to the check
+#   message     shown verbatim as the violation reason; write it for a person
+#   move_to     migration marker, see the integrity note at the foot of file
+#
+# applies_to options
+#   cde_only        default true; restrict to critical data elements
+#   semantic_type   string or list
+#   inferred_type   string or list
+#   name_matches    regex against the column name
+#   enum_only       only columns detected as a closed domain
+#   min_fill_rate   skip near-empty columns
+#   scope: record   whole-record rule, bound once rather than per column
+# =========================================================================
+
+version: 1
+name: Default industry rule pack
+
+rules:
+
+  # =====================================================================
+  # COMPLETENESS -- are values present where they are required?
+  # =====================================================================
+  - id: COM-NULL
+    name: Mandatory field populated
+    dimension: completeness
+    check: not_null
+    severity: high
+    applies_to:
+      cde_only: true
+    message: Required field is empty
+
+  - id: COM-PLACEHOLDER
+    name: No placeholder values
+    dimension: completeness
+    check: not_placeholder
+    severity: medium
+    applies_to:
+      cde_only: true
+    message: Value is a placeholder such as N/A or UNKNOWN and carries no information
+
+  - id: COM-FILL
+    name: Column fill rate acceptable
+    dimension: completeness
+    check: fill_rate_above
+    severity: high
+    params:
+      threshold: 0.95
+    applies_to:
+      cde_only: true
+
+  # =====================================================================
+  # VALIDITY -- does the value conform to its expected format or domain?
+  # =====================================================================
+  - id: VAL-EMAIL
+    name: Email address format
+    dimension: validity
+    check: regex_match
+    severity: high
+    params:
+      pattern: '^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$'
+    applies_to:
+      semantic_type: email
+    message: Not a valid email address format
+
+  - id: VAL-PHONE
+    name: Phone number valid
+    dimension: validity
+    check: valid_phone
+    severity: medium
+    params:
+      region: US
+    applies_to:
+      semantic_type: phone
+    message: Not a valid phone number
+
+  - id: VAL-URL
+    name: URL format
+    dimension: validity
+    check: regex_match
+    severity: low
+    params:
+      pattern: '^(https?://|www\.)[^\s]+$'
+    applies_to:
+      semantic_type: url
+    message: Not a valid URL
+
+  - id: VAL-POSTCODE
+    name: Postcode format
+    dimension: validity
+    check: regex_match
+    severity: medium
+    params:
+      pattern: '^[A-Za-z0-9][A-Za-z0-9\s\-]{2,9}$'
+    applies_to:
+      semantic_type: postcode
+    message: Not a recognisable postcode format
+
+  - id: VAL-CURRENCY
+    name: Currency code format
+    dimension: validity
+    check: regex_match
+    severity: medium
+    params:
+      pattern: '^[A-Za-z]{3}$'
+    applies_to:
+      semantic_type: currency_code
+    message: Currency code must be three letters
+
+  - id: VAL-DATE-PARSE
+    name: Date is parseable
+    dimension: validity
+    check: parseable_date
+    severity: high
+    applies_to:
+      semantic_type: [date, datetime]
+    message: Value is not a recognisable date
+
+  - id: VAL-DATE-RANGE
+    name: Date within plausible range
+    dimension: validity
+    check: date_in_plausible_range
+    severity: medium
+    params:
+      min_year: 1900
+      max_years_ahead: 10
+    applies_to:
+      semantic_type: [date, datetime]
+
+  - id: VAL-ENUM
+    name: Value within the column domain
+    dimension: validity
+    check: in_enum_domain
+    severity: medium
+    applies_to:
+      enum_only: true
+    message: Value is outside the set of values used elsewhere in this column
+
+  - id: VAL-TYPE
+    name: Value matches the column type
+    dimension: validity
+    check: type_conforms
+    severity: high
+    applies_to:
+      inferred_type: [integer, decimal, date, datetime]
+
+  - id: VAL-LENGTH
+    name: Value length reasonable
+    dimension: validity
+    check: length_within
+    severity: low
+    applies_to:
+      inferred_type: string
+      min_fill_rate: 0.1
+
+  - id: VAL-NEGATIVE
+    name: Quantity not negative
+    dimension: validity
+    check: numeric_range
+    severity: medium
+    params:
+      allow_negative: false
+    applies_to:
+      name_matches: 'quantity|qty|count|age|weight|height|duration'
+    message: Value should not be negative
+
+  # =====================================================================
+  # UNIQUENESS -- does the same entity appear more than once?
+  # Record-scope rules: bound once, not per column.
+  # =====================================================================
+  - id: UNQ-EXACT
+    name: No identical duplicate records
+    dimension: uniqueness
+    check: exact_record_duplicate
+    severity: high
+    applies_to:
+      scope: record
+
+  - id: UNQ-KEY
+    name: Identifier is unique
+    dimension: uniqueness
+    check: candidate_key_duplicate
+    severity: high
+    params:
+      distinctness: 0.95
+    applies_to:
+      scope: record
+
+  - id: UNQ-FUZZY
+    name: No near-duplicate records
+    dimension: uniqueness
+    check: fuzzy_duplicate
+    severity: medium
+    params:
+      threshold: 88
+      max_block_size: 500
+    applies_to:
+      scope: record
+
+  # =====================================================================
+  # CONSISTENCY -- is the field formatted the same way throughout?
+  # =====================================================================
+  - id: CON-PATTERN
+    name: Format consistent within column
+    dimension: consistency
+    check: pattern_consistent
+    severity: medium
+    params:
+      coverage: 0.95
+    applies_to:
+      cde_only: true
+      min_fill_rate: 0.1
+
+  - id: CON-CASE
+    name: Casing consistent within column
+    dimension: consistency
+    check: consistent_casing
+    severity: low
+    applies_to:
+      semantic_type: [person_name, org_name, city, state, country, category]
+
+  - id: CON-WHITESPACE
+    name: No leading or trailing whitespace
+    dimension: consistency
+    check: no_surrounding_whitespace
+    severity: low
+    applies_to:
+      cde_only: true
+
+  - id: CON-DATEFMT
+    name: Single date format per column
+    dimension: consistency
+    check: single_date_format
+    severity: high
+    applies_to:
+      semantic_type: [date, datetime]
+    message: Column mixes more than one date format, which is ambiguous downstream
+
+  # =====================================================================
+  # ACCURACY -- are values plausible and non-contradictory?
+  # Assessed without an external source of truth; see the limitation note
+  # in REQUIREMENTS_CSV_PHASE1.md section 6.
+  # =====================================================================
+  - id: ACC-COUNTRY
+    name: Country is recognised
+    dimension: accuracy
+    check: in_reference_list
+    severity: medium
+    params:
+      list: country
+    applies_to:
+      semantic_type: country
+
+  - id: ACC-CURRENCY
+    name: Currency code is recognised
+    dimension: accuracy
+    check: in_reference_list
+    severity: medium
+    params:
+      list: currency
+    applies_to:
+      semantic_type: currency_code
+
+  - id: ACC-EMAILDOM
+    name: Email domain is plausible
+    dimension: accuracy
+    check: email_domain_plausible
+    severity: medium
+    applies_to:
+      semantic_type: email
+    message: Email domain closely resembles a common domain and is probably a typo
+
+  - id: ACC-DOB
+    name: Date of birth not in the future
+    dimension: accuracy
+    check: not_future_date
+    severity: high
+    applies_to:
+      name_matches: 'birth|dob'
+    message: Date of birth is in the future
+
+  - id: ACC-OUTLIER
+    name: Value within statistical norms
+    dimension: accuracy
+    check: statistical_outlier
+    severity: low
+    params:
+      threshold: 3.5
+    applies_to:
+      inferred_type: [integer, decimal]
+
+  - id: ACC-NEGATIVE
+    name: No anomalous negative values
+    dimension: accuracy
+    check: non_negative
+    severity: medium
+    applies_to:
+      inferred_type: [integer, decimal]
+
+  # ---------------------------------------------------------------------
+  # The two rules below are CROSS-FIELD DEPENDENCY checks. They properly
+  # belong to the INTEGRITY dimension, which is deferred to the next phase.
+  # They are placed under accuracy so the logic is not lost, and tagged
+  # with `move_to` so the migration is mechanical: when integrity is
+  # implemented, change `dimension` to integrity and drop `move_to`.
+  # ---------------------------------------------------------------------
+  - id: ACC-POSTCODE-COUNTRY
+    name: Postcode matches country
+    dimension: accuracy
+    move_to: integrity
+    check: postcode_matches_country
+    severity: medium
+    applies_to:
+      semantic_type: postcode
+    message: Postcode format does not match the country recorded on this row
+
+  - id: ACC-ZIP-STATE
+    name: ZIP code matches state
+    dimension: accuracy
+    move_to: integrity
+    check: zip_matches_state
+    severity: medium
+    applies_to:
+      semantic_type: postcode
+    message: ZIP code does not belong to the state recorded on this row
+
+  # =====================================================================
+  # TIMELINESS -- is the data current?
+  # Returns notAssessed rather than zero when the file has no date column.
+  # =====================================================================
+  - id: TIM-STALE
+    name: Record updated recently
+    dimension: timeliness
+    check: not_stale
+    severity: medium
+    params:
+      days: 730
+    applies_to:
+      semantic_type: [date, datetime]
+      name_matches: 'updated|modified|last|activity|contact|login|order|transaction'
+
+  - id: TIM-FUTURE
+    name: Date not in the future
+    dimension: timeliness
+    check: not_future_dated
+    severity: high
+    applies_to:
+      semantic_type: [date, datetime]
+      name_matches: 'created|signup|joined|start|registered|opened'
+
+  - id: TIM-RANGE
+    name: Date within the column range
+    dimension: timeliness
+    check: within_expected_range
+    severity: low
+    params:
+      margin_days: 3650
+    applies_to:
+      semantic_type: [date, datetime]
+
+# =========================================================================
+# INTEGRITY -- DEFERRED TO THE NEXT PHASE, NOT ABANDONED
+#
+# Integrity measures whether relationships BETWEEN datasets hold. A single
+# standalone CSV has no second dataset to relate to, so the dimension would
+# score vacuously here and mislead a client reading the report.
+#
+# IMPLEMENT THIS SECTION once multi-table sources (Salesforce
+# Account-to-Contact, Oracle foreign keys) are connected. The checklist is
+# in dqa/config.py under DEFERRED_DIMENSIONS. In short: add "integrity" to
+# DIMENSIONS, extend RunContext to hold multiple datasets, implement
+# dqa/checks/integrity.py against the existing stateful-check interface,
+# uncomment below, and move the two `move_to: integrity` rules above.
+#
+# Intended rules:
+#
+#   - id: INT-ORPHAN
+#     name: Foreign key resolves to a parent record
+#     dimension: integrity
+#     check: foreign_key_resolves
+#     severity: high
+#     params:
+#       parent_dataset: Account
+#       parent_key: Id
+#     applies_to:
+#       name_matches: '_?id$'
+#     message: References a parent record that does not exist
+#
+#   - id: INT-CHILDLESS
+#     name: Mandatory relationship has a child record
+#     dimension: integrity
+#     check: mandatory_child_exists
+#     severity: medium
+#
+#   - id: INT-LOOKUP
+#     name: Code resolves in its lookup table
+#     dimension: integrity
+#     check: lookup_code_resolves
+#     severity: medium
+#
+#   - id: INT-CARDINALITY
+#     name: One-to-one relationship not violated
+#     dimension: integrity
+#     check: cardinality_holds
+#     severity: high
+#
+#   - id: INT-DEPENDENT-FIELD
+#     name: Dependent field populated when its parent field is
+#     dimension: integrity
+#     check: dependent_field_populated
+#     severity: medium
+# =========================================================================

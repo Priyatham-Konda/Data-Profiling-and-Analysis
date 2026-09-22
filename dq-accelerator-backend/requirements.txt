@@ -1,0 +1,20 @@
+# Runtime -- all permissively licensed, no commercial or copyleft components.
+fastapi==0.115.6           # MIT
+uvicorn[standard]==0.34.0  # BSD 3-Clause
+python-multipart==0.0.20   # Apache 2.0
+pydantic==2.10.4           # MIT
+pandas==2.2.3              # BSD 3-Clause
+numpy==2.2.1               # BSD 3-Clause
+pyarrow==18.1.0            # Apache 2.0
+charset-normalizer==3.4.1  # MIT
+python-dateutil==2.9.0.post0  # Apache 2.0 / BSD
+PyYAML==6.0.2              # MIT
+rapidfuzz==3.11.0          # MIT
+phonenumbers==8.13.52      # Apache 2.0
+Metaphone==0.6             # BSD
+Jinja2==3.1.5              # BSD 3-Clause
+weasyprint==63.1           # BSD 3-Clause
+
+# NOT USED, recorded deliberately:
+#   pycountry  -- LGPL 2.1; reference data is bundled instead
+#   paramiko   -- LGPL 2.1; not needed until the SFTP connector phase

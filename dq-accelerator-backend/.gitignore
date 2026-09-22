@@ -1,0 +1,12 @@
+data/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+.env
+.env.local
+tests/fixtures/*.csv
+tests/fixtures/manifest.json

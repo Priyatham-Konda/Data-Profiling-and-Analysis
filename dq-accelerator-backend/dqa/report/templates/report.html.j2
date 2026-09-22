@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Data Quality Assessment — {{ filename }}</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 20mm 16mm;
+    @bottom-center { content: "Data Quality Assessment · " counter(page) " of " counter(pages);
+      font-family: Helvetica, Arial, sans-serif; font-size: 8pt; color: #7A858E; } }
+  body { font-family: Helvetica, Arial, sans-serif; color: #24303A; font-size: 10pt; line-height: 1.45; }
+  h1 { font-size: 22pt; margin: 0 0 4pt; }
+  h2 { font-size: 13pt; margin: 22pt 0 6pt; padding-bottom: 4pt; border-bottom: 1px solid #D8DEE4; }
+  h3 { font-size: 11pt; margin: 14pt 0 4pt; }
+  .sub { color: #5A6572; font-size: 10pt; margin: 0 0 18pt; }
+  .cover { border-left: 4px solid #3D6B54; padding-left: 14pt; margin-bottom: 20pt; }
+  .kpis { display: table; width: 100%; margin: 14pt 0; border-spacing: 6pt 0; }
+  .kpi { display: table-cell; width: 25%; background: #F4F6F8; padding: 10pt; border-radius: 4pt; }
+  .kpi .v { font-size: 17pt; font-weight: bold; display: block; }
+  .kpi .l { font-size: 8pt; color: #5A6572; text-transform: uppercase; letter-spacing: 0.04em; }
+  .score-big { font-size: 40pt; font-weight: bold; line-height: 1; }
+  table { width: 100%; border-collapse: collapse; margin: 8pt 0 14pt; font-size: 9pt; }
+  th { text-align: left; background: #F4F6F8; padding: 5pt 7pt; border-bottom: 1px solid #D8DEE4; font-size: 8pt;
+       text-transform: uppercase; letter-spacing: 0.03em; color: #5A6572; }
+  td { padding: 5pt 7pt; border-bottom: 1px solid #EDF0F3; vertical-align: top; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .healthy { color: #2F7A55; } .needs { color: #B5761F; } .critical { color: #B33A3A; }
+  .na { color: #7A858E; font-style: italic; }
+  .bar { height: 7pt; background: #EDF0F3; border-radius: 3pt; overflow: hidden; width: 100%; }
+  .bar span { display: block; height: 100%; }
+  .note { background: #F4F6F8; border-left: 3px solid #9AA7B1; padding: 8pt 10pt; font-size: 9pt;
+          color: #4A5560; margin: 12pt 0; }
+  .dim { page-break-inside: avoid; margin-bottom: 16pt; }
+  .ex { font-family: "DejaVu Sans Mono", monospace; font-size: 8pt; }
+  .page-break { page-break-before: always; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>Data Quality Assessment</h1>
+  <p class="sub">{{ filename }} · {{ generated }}</p>
+</div>
+
+{% macro cls(b) %}{% if b == 'healthy' %}healthy{% elif b == 'needs attention' %}needs{% elif b == 'critical' %}critical{% else %}na{% endif %}{% endmacro %}
+{% macro colour(s) %}{% if s >= 90 %}#2F7A55{% elif s >= 70 %}#B5761F{% else %}#B33A3A{% endif %}{% endmacro %}
+
+<h2>Overall result</h2>
+<p><span class="score-big {{ cls(overall_band) }}">{{ overall if overall is not none else '—' }}</span>
+   <span style="font-size:12pt;color:#5A6572;"> / 100 · {{ overall_band }}</span></p>
+
+<div class="kpis">
+  <div class="kpi"><span class="v">{{ "{:,}".format(records) }}</span><span class="l">Records assessed</span></div>
+  <div class="kpi"><span class="v">{{ columns }}</span><span class="l">Columns found</span></div>
+  <div class="kpi"><span class="v">{{ cdes }}</span><span class="l">Critical data elements</span></div>
+  <div class="kpi"><span class="v">{{ dimensions | selectattr('score') | list | length }}</span><span class="l">Dimensions scored</span></div>
+</div>
+
+{% if sampled %}
+<div class="note"><strong>Sampled assessment.</strong> This file contains
+{{ "{:,}".format(records) }} records, above the threshold for full processing.
+A representative sample of {{ "{:,}".format(sampled_rows) }} records was assessed.
+Percentages are representative; absolute counts are not exact.</div>
+{% endif %}
+
+{% if parse_warnings %}
+<div class="note"><strong>{{ "{:,}".format(parse_warnings) }} rows could not be
+parsed</strong> and were excluded. This usually indicates inconsistent column
+counts in the export itself.</div>
+{% endif %}
+
+<h2>What this means</h2>
+{% if worst %}
+<p>The three weakest areas in this file are set out below, with their typical
+business consequence.</p>
+<table>
+  <tr><th>Area</th><th class="num">Score</th><th class="num">Failures</th><th>Consequence if unaddressed</th></tr>
+  {% for d in worst %}
+  <tr>
+    <td><strong>{{ d.label }}</strong></td>
+    <td class="num {{ cls(d.band) }}">{{ d.score }}</td>
+    <td class="num">{{ "{:,}".format(d.failed) }}</td>
+    <td>{{ d.impact }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p>No dimension could be scored for this file.</p>
+{% endif %}
+
+<h2>Scope and method</h2>
+<p>Every column was profiled and {{ cdes }} of {{ columns }} were identified as
+critical data elements — the fields carrying business meaning, as distinct
+from system and audit columns. Assessment rules were applied to those fields
+across the dimensions below.</p>
+<div class="note">{{ deferred_note }}</div>
+
+{% if is_in_depth and cde_columns %}
+<h3>Critical data elements assessed</h3>
+<table>
+  <tr><th>Column</th><th>Type</th><th class="num">Populated</th><th>Why selected</th></tr>
+  {% for c in cde_columns %}
+  <tr>
+    <td>{{ c.name }}</td>
+    <td>{{ c.semantic_type | replace('_', ' ') }}</td>
+    <td class="num">{% if c.total %}{{ "%.0f%%" | format((c.total - c.nulls - c.blanks) / c.total * 100) }}{% else %}—{% endif %}</td>
+    <td>{{ c.cde_reasons | join('; ') }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2>Results by dimension</h2>
+{% for d in dimensions %}
+<div class="dim">
+  <h3>{{ d.label }}
+    {% if d.score is not none %}
+      <span class="{{ cls(d.band) }}">— {{ d.score }} / 100</span>
+    {% else %}<span class="na">— not assessed</span>{% endif %}
+  </h3>
+  <p style="color:#5A6572;margin:2pt 0 6pt;">{{ d.blurb }}</p>
+
+  {% if d.not_assessed %}
+    <div class="note">{{ d.not_assessed }}</div>
+  {% else %}
+    <div class="bar"><span style="width:{{ d.score }}%;background:{{ colour(d.score) }};"></span></div>
+    <p style="font-size:9pt;color:#5A6572;margin:5pt 0 0;">
+      {{ "{:,}".format(d.failed) }} failing values across {{ d.rules | length }} rules.</p>
+    {% if is_in_depth and d.rules %}
+    <table>
+      <tr><th>Rule</th><th>Column</th><th class="num">Pass rate</th><th class="num">Failed</th></tr>
+      {% for r in d.rules[:12] %}
+      <tr>
+        <td>{{ r.rule_name }}</td>
+        <td>{{ r.column or 'whole record' }}</td>
+        <td class="num">{{ "%.1f%%" | format(r.passRate * 100) }}</td>
+        <td class="num">{{ "{:,}".format(r.failed) }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+  {% endif %}
+</div>
+{% endfor %}
+
+{% if is_in_depth %}
+<div class="page-break"></div>
+<h2>Example failing records</h2>
+<p style="color:#5A6572;">Drawn directly from the assessed file. Row numbers
+refer to lines in the original export.</p>
+{% for d in dimensions %}{% for ex in d.examples %}
+<h3>{{ d.label }} — {{ ex.rule.rule_name }}</h3>
+<table class="ex">
+  <tr><th>Row</th><th>Column</th><th>Value</th><th>Issue</th></tr>
+  {% for row in ex.rows %}
+  <tr><td class="num">{{ row.row }}</td><td>{{ row.column or '—' }}</td>
+      <td>{{ row.value }}</td><td>{{ row.reason }}</td></tr>
+  {% endfor %}
+</table>
+{% endfor %}{% endfor %}
+{% endif %}
+
+<h2>Limitations</h2>
+<p>Accuracy is assessed without an external source of truth. It covers
+reference-list conformance, cross-field contradiction and statistical
+outliers, and cannot confirm that a plausible value is factually correct.
+Business rules specific to this organisation were not applied; capturing them
+is the next step and typically raises the number of findings.</p>
+
+</body>
+</html>

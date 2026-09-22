@@ -1,0 +1,20 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DQA_DATA_ROOT: /data
+      DQA_LOG_LEVEL: INFO
+      DQA_MAX_WORKERS: "2"
+      DQA_RETENTION_DAYS: "7"
+      # The Vite dev server origin. Add the deployed frontend origin here too.
+      DQA_CORS_ORIGINS: "http://localhost:5173,http://localhost:3000"
+    volumes:
+      - dqa-data:/data
+      # Rule packs mounted read-only so they can be edited without a rebuild.
+      - ./rules:/app/rules:ro
+    restart: unless-stopped
+
+volumes:
+  dqa-data:
