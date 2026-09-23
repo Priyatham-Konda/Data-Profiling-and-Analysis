@@ -16,7 +16,10 @@ hunting for stray files.
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import threading
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
@@ -46,11 +49,36 @@ def report_path(run_id: str, report_type: str) -> Path:
 # --------------------------------------------------------------------------
 # JSON documents
 # --------------------------------------------------------------------------
+# os.replace is atomic on POSIX, but on Windows it raises PermissionError
+# while any process holds the destination open. GET /runs and GET /runs/{id}
+# are polled every few seconds per open browser tab, so a reader is very
+# often holding meta.json at the moment the worker rewrites it. Unretried,
+# the worker's write raises and the run is marked failed -- because somebody
+# was watching it. A short backoff outlasts a reader that only opens the
+# file to parse a few hundred bytes.
+_REPLACE_ATTEMPTS = 8
+_REPLACE_BACKOFF = 0.02
+
+
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    # Unique temp name per writer: the worker and an API request can both
+    # write meta.json, and a shared temp name lets one delete the other's
+    # file out from under it.
+    tmp = path.with_suffix(
+        f"{path.suffix}.{os.getpid()}-{threading.get_ident()}.tmp"
+    )
     tmp.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
-    tmp.replace(path)  # atomic, so a poller never reads a half-written file
+
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            tmp.replace(path)  # atomic: a poller never reads a half-written file
+            return
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS - 1:
+                tmp.unlink(missing_ok=True)
+                raise
+            time.sleep(_REPLACE_BACKOFF * (attempt + 1))
 
 
 def _read_json(path: Path) -> Optional[dict]:

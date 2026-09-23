@@ -20,7 +20,6 @@
 #   applies_to  which columns this binds to
 #   params      passed to the check
 #   message     shown verbatim as the violation reason; write it for a person
-#   move_to     migration marker, see the integrity note at the foot of file
 #
 # applies_to options
 #   cde_only        default true; restrict to critical data elements
@@ -316,33 +315,6 @@ rules:
     applies_to:
       inferred_type: [integer, decimal]
 
-  # ---------------------------------------------------------------------
-  # The two rules below are CROSS-FIELD DEPENDENCY checks. They properly
-  # belong to the INTEGRITY dimension, which is deferred to the next phase.
-  # They are placed under accuracy so the logic is not lost, and tagged
-  # with `move_to` so the migration is mechanical: when integrity is
-  # implemented, change `dimension` to integrity and drop `move_to`.
-  # ---------------------------------------------------------------------
-  - id: ACC-POSTCODE-COUNTRY
-    name: Postcode matches country
-    dimension: accuracy
-    move_to: integrity
-    check: postcode_matches_country
-    severity: medium
-    applies_to:
-      semantic_type: postcode
-    message: Postcode format does not match the country recorded on this row
-
-  - id: ACC-ZIP-STATE
-    name: ZIP code matches state
-    dimension: accuracy
-    move_to: integrity
-    check: zip_matches_state
-    severity: medium
-    applies_to:
-      semantic_type: postcode
-    message: ZIP code does not belong to the state recorded on this row
-
   # =====================================================================
   # TIMELINESS -- is the data current?
   # Returns notAssessed rather than zero when the file has no date column.
@@ -377,19 +349,70 @@ rules:
     applies_to:
       semantic_type: [date, datetime]
 
+  # =====================================================================
+  # INTEGRITY -- do the relationships this file asserts actually hold?
+  #
+  # Every rule here works WITHIN the uploaded file. Integrity between
+  # datasets needs a second dataset and is listed at the foot of this file.
+  #
+  # The first two rules moved here from accuracy, where they were parked
+  # while integrity was deferred. They are cross-field checks: the finding
+  # is a contradiction between two columns of the same row, which is an
+  # integrity question rather than an accuracy one.
+  # =====================================================================
+  - id: INT-POSTCODE-COUNTRY
+    name: Postcode matches country
+    dimension: integrity
+    check: postcode_matches_country
+    severity: medium
+    applies_to:
+      semantic_type: postcode
+    message: Postcode format does not match the country recorded on this row
+
+  - id: INT-ZIP-STATE
+    name: ZIP code matches state
+    dimension: integrity
+    check: zip_matches_state
+    severity: medium
+    applies_to:
+      semantic_type: postcode
+    message: ZIP code does not belong to the state recorded on this row
+
+  # Scoped to the record: the check chooses its own column pairs from the
+  # profile rather than being bound to one column, so binding it per column
+  # would run it once per column over the same pairs.
+  - id: INT-CARDINALITY
+    name: Value resolves consistently across the file
+    dimension: integrity
+    check: cardinality_holds
+    severity: high
+    applies_to:
+      scope: record
+    message: This value contradicts the mapping the rest of the file follows
+
+  - id: INT-DEPENDENT-FIELD
+    name: Dependent field populated when its partner field is
+    dimension: integrity
+    check: dependent_field_populated
+    severity: medium
+    params:
+      support: 0.90
+    applies_to:
+      scope: record
+    message: This field is empty on a row where the file's own pattern fills it
+
 # =========================================================================
-# INTEGRITY -- DEFERRED TO THE NEXT PHASE, NOT ABANDONED
+# CROSS-DATASET INTEGRITY -- STILL OUTSTANDING
 #
-# Integrity measures whether relationships BETWEEN datasets hold. A single
-# standalone CSV has no second dataset to relate to, so the dimension would
-# score vacuously here and mislead a client reading the report.
+# The rules above cover integrity within one file. The rules below need a
+# SECOND dataset to relate to, which a single CSV upload does not provide,
+# so they stay commented until multi-table sources (Salesforce
+# Account-to-Contact, Oracle foreign keys) are connected.
 #
-# IMPLEMENT THIS SECTION once multi-table sources (Salesforce
-# Account-to-Contact, Oracle foreign keys) are connected. The checklist is
-# in dqa/config.py under DEFERRED_DIMENSIONS. In short: add "integrity" to
-# DIMENSIONS, extend RunContext to hold multiple datasets, implement
-# dqa/checks/integrity.py against the existing stateful-check interface,
-# uncomment below, and move the two `move_to: integrity` rules above.
+# To enable them: extend RunContext to hold multiple datasets, implement
+# these checks in dqa/checks/integrity.py beside the within-dataset ones,
+# and uncomment below. See dqa/config.py. Nothing above has to change.
+
 #
 # Intended rules:
 #

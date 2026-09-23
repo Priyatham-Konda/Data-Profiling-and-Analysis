@@ -69,17 +69,28 @@ counts in the export itself.</div>
 {% endif %}
 
 <h2>What this means</h2>
-{% if worst %}
-<p>The three weakest areas in this file are set out below, with their typical
-business consequence.</p>
+{% if ranked %}
+{% if any_assessed %}
+<p>Every dimension assessed in this file, weakest first, with the business
+consequence of leaving it unaddressed. Dimensions that could not be assessed
+are listed last with the reason.</p>
+{% else %}
+<p>No dimension could be scored for this file. The reasons are set out below.</p>
+{% endif %}
 <table>
   <tr><th>Area</th><th class="num">Score</th><th class="num">Failures</th><th>Consequence if unaddressed</th></tr>
-  {% for d in worst %}
+  {% for d in ranked %}
   <tr>
     <td><strong>{{ d.label }}</strong></td>
+    {% if d.score is not none %}
     <td class="num {{ cls(d.band) }}">{{ d.score }}</td>
     <td class="num">{{ "{:,}".format(d.failed) }}</td>
     <td>{{ d.impact }}</td>
+    {% else %}
+    <td class="num na">not assessed</td>
+    <td class="num na">&mdash;</td>
+    <td class="na">{{ d.not_assessed }}</td>
+    {% endif %}
   </tr>
   {% endfor %}
 </table>
@@ -128,7 +139,7 @@ across the dimensions below.</p>
     {% if is_in_depth and d.rules %}
     <table>
       <tr><th>Rule</th><th>Column</th><th class="num">Pass rate</th><th class="num">Failed</th></tr>
-      {% for r in d.rules[:12] %}
+      {% for r in d.rules[:rules_shown] %}
       <tr>
         <td>{{ r.rule_name }}</td>
         <td>{{ r.column or 'whole record' }}</td>

@@ -225,22 +225,46 @@ def _to_numeric(series: pd.Series) -> pd.Series:
     return pd.to_numeric(cleaned, errors="coerce")
 
 
+def _naive_utc(parsed: pd.Series) -> pd.Series:
+    """Drop the timezone, having normalised to UTC first.
+
+    Parsed with utc=True, a naive value is localised to UTC and then
+    un-localised back to exactly itself, so files without offsets are
+    unaffected.
+    """
+    if isinstance(parsed.dtype, pd.DatetimeTZDtype):
+        return parsed.dt.tz_localize(None)
+    return parsed
+
+
 def _parse_dates(values: pd.Series) -> pd.Series:
-    """Try known formats first, then fall back. Returns NaT where unparseable."""
+    """Try known formats first, then fall back. Returns NaT where unparseable.
+
+    Everything is normalised to tz-naive UTC. Salesforce exports carry an
+    offset (`2026-09-08 17:14:44+00:00`) while hand-maintained files usually
+    do not, and one column can hold both. Left mixed, every downstream
+    comparison against a naive timestamp raises "Cannot compare tz-naive and
+    tz-aware timestamps" -- and because the executor drops any rule that
+    errors, the rule vanishes from scoring instead of failing loudly.
+    """
     result = pd.Series([pd.NaT] * len(values), index=values.index, dtype="datetime64[ns]")
     remaining = values.str.strip() != ""
 
     for fmt in DATE_FORMATS:
         if not remaining.any():
             break
-        attempt = pd.to_datetime(values[remaining], format=fmt, errors="coerce")
+        attempt = _naive_utc(
+            pd.to_datetime(values[remaining], format=fmt, errors="coerce", utc=True)
+        )
         good = attempt.notna()
         if good.any():
             result.loc[attempt[good].index] = attempt[good]
             remaining.loc[attempt[good].index] = False
 
     if remaining.any():
-        attempt = pd.to_datetime(values[remaining], errors="coerce", format="mixed")
+        attempt = _naive_utc(
+            pd.to_datetime(values[remaining], errors="coerce", format="mixed", utc=True)
+        )
         good = attempt.notna()
         if good.any():
             result.loc[attempt[good].index] = attempt[good]

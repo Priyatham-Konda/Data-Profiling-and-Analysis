@@ -17,6 +17,7 @@ from typing import Optional
 
 from . import config
 from .cde import detector
+from .checks import integrity as integrity_checks
 from .checks import timeliness as timeliness_checks
 from .ingest.reader import CsvSource, IngestError, open_source
 from .models import DatasetProfile, RunContext
@@ -160,6 +161,16 @@ def run_assessment(ctx: RunContext, cde_override: Optional[list[str]] = None) ->
         _report(run_id, "Profiling", _fraction(seen, total_rows, sample_every))
 
     assessed_rows = seen
+    # row_count() is a byte-line count, so it overstates any file whose
+    # quoted fields contain newlines -- one Salesforce description field can
+    # inflate it several times over. Now that the file has actually been
+    # streamed, the rows pandas produced ARE the record count, so prefer that
+    # for the number the client is shown. Sampling is the exception: there
+    # `seen` is only the sample, and the line count stays the sole estimate
+    # of the whole file available without a second pass.
+    if not sampled:
+        total_rows = assessed_rows
+
     profile: DatasetProfile = profiler.finalise(row_count=assessed_rows)
     profile.parse_warnings = source.parse_warnings
     profile.parse_warning_examples = source.parse_warning_examples
@@ -184,6 +195,13 @@ def run_assessment(ctx: RunContext, cde_override: Optional[list[str]] = None) ->
     assessable, reason = timeliness_checks.is_assessable(profile)
     if not assessable:
         not_assessed["timeliness"] = reason
+
+    # Integrity infers relationships from the file rather than being told
+    # them, so a file too small or too narrow to infer from is reported as
+    # not assessed rather than scored on nothing.
+    assessable, reason = integrity_checks.is_assessable(profile)
+    if not assessable:
+        not_assessed["integrity"] = reason
 
     pack = load_pack()
     rules = expand(pack, profile)

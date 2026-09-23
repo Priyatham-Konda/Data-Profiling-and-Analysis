@@ -1,0 +1,37 @@
+# Client data must never reach the repository. This tool is pointed at real
+# exports -- contact records with names, emails, phone numbers and birth
+# dates -- and the GitHub remote is public. An accidental `git add -A` is
+# the only thing standing between a demo file and a disclosure.
+#
+# Anything dropped in the working directory to be assessed is data, not
+# source. Keep it that way.
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.json.gz
+
+# Run artifacts: data/runs/{id}/source.csv is a verbatim copy of whatever
+# was uploaded, so this directory is as sensitive as the uploads themselves.
+data/
+*.sqlite
+*.db
+
+# Generated reports carry the data they describe.
+*.pdf
+!dqa-architecture-v1.png
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+.env
+.env.local
+
+# Editors
+.vscode/
+.idea/

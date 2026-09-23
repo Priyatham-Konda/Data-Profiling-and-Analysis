@@ -1,8 +1,8 @@
 # Data Quality Accelerator — Backend
 
-Assesses an arbitrary CSV export across six data quality dimensions and
+Assesses an arbitrary CSV export across seven data quality dimensions and
 returns scores, rule-level breakdowns, failing-record examples and a PDF
-report. Implements `API_CONTRACT.md` revision 2.
+report. Implements `API_CONTRACT.md` revision 3.
 
 The point is that it receives files it has never seen, with no schema and no
 cooperation from the source system. Column types, semantic meaning and
@@ -15,15 +15,33 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 
 python tools/make_test_data.py --out tests/fixtures   # golden fixtures
-pytest                                                 # 73 tests
+pytest                                                 # 80 tests
 uvicorn dqa.api.app:app --reload --port 8000
 ```
 
-Or with Docker, which also brings the PDF rendering libraries:
+Or with Docker, which also brings the PDF rendering libraries and fonts:
 
 ```bash
 docker compose up --build
 ```
+
+**Running outside the container needs two things installed by hand**, and the
+second fails silently:
+
+1. **Pango and Cairo**, which WeasyPrint binds to. Without them the PDF
+   endpoint returns a clear error. On Windows, install MSYS2 and
+   `mingw-w64-x86_64-pango`, then put `C:\msys64\mingw64\bin` on `PATH`.
+2. **The DejaVu fonts.** The example tables ask for DejaVu Sans Mono. Where
+   it is missing, font fallback can land on a font that cannot be embedded,
+   WeasyPrint emits a Type 3 font, and most viewers draw those glyphs as
+   *nothing* — so the failing-record tables reach the client as empty rows
+   with headers and borders but no values. Nothing errors and the text is
+   still in the PDF, so this survives every check short of looking at the
+   page. `tests/test_engine.py::TestReportRendering::test_no_type3_fonts`
+   exists to catch it. On Windows install `mingw-w64-x86_64-ttf-dejavu` and
+   copy the TTFs into a directory fontconfig scans, such as
+   `%USERPROFILE%\.local\share\fonts`; the container gets them from
+   `fonts-dejavu-core`.
 
 Point the frontend at it by setting `VITE_API_BASE_URL=http://localhost:8000/api`
 in its `.env.local`. No frontend code changes are needed.
@@ -36,7 +54,7 @@ curl http://localhost:8000/api/runs/<run_id>
 curl "http://localhost:8000/api/runs/<run_id>/report?type=in-depth" -o report.pdf
 ```
 
-## The six dimensions
+## The seven dimensions
 
 | Dimension | Question | Main techniques |
 | --- | --- | --- |
@@ -46,25 +64,45 @@ curl "http://localhost:8000/api/runs/<run_id>/report?type=in-depth" -o report.pd
 | Consistency | Is the field formatted the same throughout? | Pattern-signature histogram, casing, whitespace, mixed date formats |
 | Accuracy | Are values plausible and non-contradictory? | Reference lists, cross-field contradiction, MAD outliers |
 | Timeliness | Is the data current? | Staleness window, future dates, range coverage |
+| Integrity | Do the relationships the file asserts hold? | Inferred functional dependencies, conditional completeness, cross-field contradiction |
 
-### Integrity is deferred, not dropped
+### Integrity, and the half of it that is still deferred
 
-**Integrity is the seventh dimension and must be implemented in the phase
-after this one.** It measures relationships *between* datasets — orphaned
-foreign keys, unresolved lookup codes, missing mandatory parents. A single
-standalone CSV has no second dataset to relate to, so scoring it here would
-be vacuous and would mislead anyone reading the report.
+Integrity is implemented for relationships **within** one file, which is all
+a single CSV upload can support:
 
-The full implementation checklist is in `dqa/config.py` under
-`DEFERRED_DIMENSIONS`. In summary: add the key to `DIMENSIONS`, extend
-`RunContext` to hold multiple datasets (the only structural change needed),
-implement `dqa/checks/integrity.py` against the existing stateful-check
-interface, uncomment the integrity section of `rules/default_pack.yaml`, and
-move the two rules tagged `move_to: integrity` out of accuracy.
+- **Inferred functional dependencies.** Where one column almost always
+  determines another — a product code resolving to a product name, a
+  postcode to a city — the rows that break the mapping are reported. The
+  dependency is inferred from the file, never assumed, so a pair of
+  unrelated columns contributes nothing instead of noise.
+- **Conditional completeness.** Where two fields are filled together on
+  almost every row, the few rows filling only one are a broken dependency
+  rather than ordinary missingness. This deliberately overlaps completeness:
+  a column 90% full looks acceptable to completeness even when every gap
+  sits on a row that needed it.
+- **Cross-field contradiction.** A postcode or ZIP that cannot belong to the
+  country or state on its own row. These two rules moved here from accuracy,
+  where they had been parked, and were renamed `INT-POSTCODE-COUNTRY` and
+  `INT-ZIP-STATE`.
 
-A test asserts integrity does **not** appear in any response until that work
-is done, because emitting an unimplemented key would render a permanently
-blank tile in the UI.
+**Cross-dataset integrity is still deferred**: orphaned foreign keys,
+mandatory parents with no child, and lookup codes resolved against a separate
+table all need a second dataset to exist. Those rules stay commented at the
+foot of `rules/default_pack.yaml`, and the checklist is in `dqa/config.py`.
+The only structural change they need is a `RunContext` that holds more than
+one dataset; nothing already implemented has to change.
+
+Because relationships are inferred rather than declared, integrity reports
+`notAssessed` more often than any other dimension — a file with one column,
+fewer than two populated CDEs, or fewer than 20 rows has nothing to infer
+from. That is the honest answer, and the same one timeliness gives a file
+with no dates.
+
+**A note on what the tile must not claim.** An integrity score here says
+nothing about foreign keys resolving against other systems, because none
+were checked. The PDF report states this explicitly and the UI should not
+contradict it.
 
 ## Architecture
 
@@ -172,7 +210,7 @@ threshold so timeliness was never assessable.
 | `messy_format.csv` | Semicolon delimiter, BOM, 3 preamble rows |
 | `no_dates.csv` | Timeliness must be `notAssessed`, never 0 |
 | `ragged.csv` | Parse warnings without a failed run |
-| `single_column.csv` | Degenerate input |
+| `single_column.csv` | Degenerate input; integrity must be `notAssessed` |
 
 ## Licences
 
@@ -216,7 +254,8 @@ source code.
 ## Next phase
 
 Salesforce, SFTP and Oracle connectors behind the existing `read()` /
-`describe()` interface; cross-source rollup; and the integrity dimension.
+`describe()` interface; cross-source rollup; and the cross-dataset half of
+the integrity dimension.
 Salesforce is the highest-value addition, because its Describe API supplies
 declared types, required flags and picklist values, which means validity and
 consistency rules can be generated from real metadata rather than inferred.

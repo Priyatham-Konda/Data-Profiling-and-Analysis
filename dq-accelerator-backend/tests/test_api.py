@@ -135,7 +135,7 @@ class TestRunDetail:
         from dqa import config
 
         assert set(body["scores"]) == set(config.DIMENSIONS)
-        assert "integrity" not in body["scores"]
+        assert "integrity" in body["scores"]
 
         # Additive fields
         assert body["columns"] == 20
@@ -213,7 +213,9 @@ class TestDimensionsAndExamples:
             )
 
     def test_unknown_dimension_is_404(self, client, completed):
-        response = client.get(f"/api/runs/{completed}/dimensions/integrity")
+        # "integrity" used to stand in for an unknown dimension here. It is
+        # a real dimension now, so this needs one that genuinely is not.
+        response = client.get(f"/api/runs/{completed}/dimensions/lineage")
         assert response.status_code == 404
 
     def test_rules_shape(self, client, completed):
@@ -310,4 +312,4 @@ class TestHealth:
     def test_health(self, client):
         body = client.get("/health").json()
         assert body["status"] == "ok"
-        assert len(body["dimensions"]) == 6
+        assert len(body["dimensions"]) == 7

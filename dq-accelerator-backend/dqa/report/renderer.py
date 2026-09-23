@@ -27,6 +27,7 @@ DIMENSION_BLURB = {
     "consistency": "Whether a field is formatted the same way throughout.",
     "accuracy": "Whether values are plausible and free of contradiction.",
     "timeliness": "Whether the data is current and its dates are coherent.",
+    "integrity": "Whether the relationships the file asserts hold across it.",
 }
 
 # Business consequence per dimension, used in the executive summary. Sales
@@ -38,6 +39,7 @@ DIMENSION_IMPACT = {
     "consistency": "broken joins, unreliable grouping and inaccurate reporting",
     "accuracy": "decisions taken on wrong information",
     "timeliness": "action taken on records that no longer reflect reality",
+    "integrity": "records that contradict one another, and joins that silently drop rows",
 }
 
 
@@ -68,9 +70,15 @@ def build_context(run_id: str, report_type: str) -> dict[str, Any]:
         )
         examples = []
         if report_type == "in-depth":
-            for rule in dim_rules[:3]:
+            # Same rules, same order, same cap as the dimension table above,
+            # so every failing rule a reader sees listed has its records
+            # further down.
+            for rule in dim_rules[: config.REPORT_RULES_SHOWN]:
+                if not rule.get("failed"):
+                    continue
                 rows = artifacts.read_violations(
-                    run_id, key, rule.get("rule_id", ""), limit=10
+                    run_id, key, rule.get("rule_id", ""),
+                    limit=config.REPORT_EXAMPLE_ROWS,
                 )
                 if rows:
                     examples.append({"rule": rule, "rows": rows})
@@ -90,7 +98,12 @@ def build_context(run_id: str, report_type: str) -> dict[str, Any]:
         )
 
     assessed = [d for d in dimensions if d["score"] is not None]
-    worst = sorted(assessed, key=lambda d: d["score"])[:3]
+    # Every dimension, weakest first, rather than the three weakest. Three
+    # was enough to name the headline problem but hid whether the rest of
+    # the file was healthy or merely less bad. Dimensions that could not be
+    # scored sort last, carrying their reason instead of a number.
+    ranked = sorted(assessed, key=lambda d: d["score"])
+    ranked += [d for d in dimensions if d["score"] is None]
 
     cde_columns = [c for c in profile.get("columns", []) if c.get("is_cde")]
 
@@ -108,13 +121,20 @@ def build_context(run_id: str, report_type: str) -> dict[str, Any]:
         "sampled_rows": results.get("sampledRows"),
         "parse_warnings": results.get("parseWarnings", 0),
         "dimensions": dimensions,
-        "worst": worst,
+        "ranked": ranked,
+        "any_assessed": bool(assessed),
+        "rules_shown": config.REPORT_RULES_SHOWN,
         "report_type": report_type,
         "is_in_depth": report_type == "in-depth",
+        # Integrity is scored here, but only within this one file. Saying so
+        # in the report matters: a reader who sees an integrity score must
+        # not conclude their foreign keys were checked against other systems.
         "deferred_note": (
-            "This assessment covers six dimensions. A seventh, integrity, "
-            "measures relationships between datasets and is assessed when "
-            "multiple related sources are connected."
+            "This assessment covers seven dimensions. Integrity is assessed "
+            "within this file -- relationships it asserts about itself, such "
+            "as a code that must always resolve to the same value. Integrity "
+            "between datasets, such as foreign keys resolving against another "
+            "system, is assessed when multiple related sources are connected."
         ),
     }
 
@@ -128,15 +148,19 @@ def render_report(run_id: str, report_type: str = "summary") -> Path:
         from weasyprint import HTML
 
         HTML(string=html, base_url=str(TEMPLATE_DIR)).write_pdf(str(output))
-    except ImportError:
+    except (ImportError, OSError) as exc:
         # WeasyPrint needs Pango and Cairo system libraries. Where they are
         # absent the HTML is written beside the expected PDF path so the run
         # still produces a readable artifact and the failure is obvious.
+        # OSError matters as much as ImportError here: the package imports
+        # cleanly and only fails when cffi dlopens libgobject, so a missing
+        # Pango surfaces as OSError, not ImportError.
         fallback = output.with_suffix(".html")
         fallback.write_text(html, encoding="utf-8")
-        log.warning("WeasyPrint unavailable; wrote HTML to %s", fallback)
+        log.warning("WeasyPrint unavailable (%s); wrote HTML to %s", exc, fallback)
         raise RuntimeError(
-            "PDF rendering is unavailable because WeasyPrint is not installed. "
-            "Install it with its Pango and Cairo system libraries."
-        )
+            "PDF rendering is unavailable: WeasyPrint could not load its Pango "
+            "and Cairo system libraries. An HTML copy of the report was saved "
+            f"to {fallback.name} instead."
+        ) from exc
     return output

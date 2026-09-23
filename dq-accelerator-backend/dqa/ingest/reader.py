@@ -70,20 +70,34 @@ def detect_encoding(path: Path) -> str:
 # --------------------------------------------------------------------------
 # Delimiter
 # --------------------------------------------------------------------------
-def _score_delimiter(lines: list[str], delim: str) -> tuple[int, float]:
+def _score_delimiter(sample: str, delim: str, max_rows: int = 200) -> tuple[int, float]:
     """Return (modal field count, stability) for a candidate delimiter.
 
-    Stability is the share of lines agreeing with the modal count. A real
+    Stability is the share of records agreeing with the modal count. A real
     delimiter produces a consistent count above 1; a wrong one produces 1 or
     noise.
+
+    The sample is parsed as CSV rather than split into physical lines. A
+    quoted field may legally contain newlines -- Salesforce description and
+    notes fields routinely do -- and splitting on them shreds one record into
+    several fragments. Scored that way a 69-column comma file collapses to a
+    modal field count of 1, is discarded as a candidate, and the delimiter
+    falls through to whatever punctuation happens to appear twice in the
+    prose. csv.reader applies the quoting rules, so a record stays whole.
     """
     counts = []
-    for line in lines:
-        try:
-            row = next(csv.reader([line], delimiter=delim))
-            counts.append(len(row))
-        except Exception:
-            continue
+    try:
+        reader = csv.reader(io.StringIO(sample), delimiter=delim)
+        for i, row in enumerate(reader):
+            if i >= max_rows:
+                break
+            if row and any(cell.strip() for cell in row):
+                counts.append(len(row))
+    except csv.Error:
+        # A wrong delimiter can make the quoting unparseable partway through.
+        # Whatever was read before that still scores the candidate, and a
+        # candidate that cannot be parsed at all scores nothing.
+        pass
     if not counts:
         return 0, 0.0
     modal, modal_n = Counter(counts).most_common(1)[0]
@@ -91,13 +105,12 @@ def _score_delimiter(lines: list[str], delim: str) -> tuple[int, float]:
 
 
 def detect_delimiter(sample: str) -> tuple[str, float]:
-    lines = [ln for ln in sample.splitlines() if ln.strip()][:200]
-    if not lines:
+    if not [ln for ln in sample.splitlines() if ln.strip()]:
         raise IngestError("The file contains no readable rows.")
 
     best_delim, best_score, best_fields = ",", 0.0, 1
     for delim in CANDIDATE_DELIMITERS:
-        fields, stability = _score_delimiter(lines, delim)
+        fields, stability = _score_delimiter(sample, delim)
         if fields < 2:
             continue
         # Prefer high stability, break ties on more fields.

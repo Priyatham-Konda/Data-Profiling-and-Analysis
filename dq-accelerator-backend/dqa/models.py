@@ -198,11 +198,12 @@ class RuleResult:
 class RunContext:
     """State passed through the pipeline for one run.
 
-    NOTE for the integrity phase: this holds exactly one dataset. Integrity
-    checks need to see two or more related datasets at once, so this class
-    grows a `datasets: dict[str, DatasetProfile]` and the checks receive the
-    whole map rather than a single profile. That is the one structural change
-    the integrity dimension requires; see dqa/config.py for the full list.
+    This holds exactly one dataset, which is all within-dataset integrity
+    needs. CROSS-dataset integrity -- orphaned foreign keys, childless
+    parents, lookup tables -- needs to see two or more related datasets at
+    once, so this class would grow a `datasets: dict[str, DatasetProfile]`
+    and those checks would receive the whole map rather than one profile.
+    That remains the one structural change required; see dqa/config.py.
     """
     run_id: str
     source_path: str

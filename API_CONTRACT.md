@@ -8,6 +8,14 @@ endpoint below has a matching mock handler in `src/mocks/handlers.js`.
 Point the frontend at a real implementation of this contract by setting
 `VITE_API_BASE_URL` in `.env.local`. No frontend code changes are needed.
 
+> **Revision 3 — `integrity` is implemented.** The dimension set is now
+> **seven** keys, not six. `integrity` appears in `scores` on every completed
+> run from this revision onward. This is the one change in revision 3 that
+> needs frontend work, and it is small: one entry in `src/api/constants.js`
+> and a tile grid that tolerates seven tiles. Read *Dimension set* below
+> before you add the tile — what integrity does and does not check affects
+> the label you put on it.
+>
 > **Revision 2 — backend additions.** Sections marked **[BACKEND PROPOSAL]**
 > were added by the backend team. Everything unmarked is unchanged from
 > revision 1 and is already implemented as specified. The proposals are
@@ -22,32 +30,92 @@ Point the frontend at a real implementation of this contract by setting
   — lowercase, no other values.
 - Dimension scores and `overall` are numbers on a **0–100** scale.
 - `progress` and rule `passRate` are **0–1** fractions, not percentages.
-- Dimension keys are a fixed set of six: `completeness`, `validity`,
-  `uniqueness`, `consistency`, `accuracy`, `timeliness`.
+- Dimension keys are a fixed set of seven: `completeness`, `validity`,
+  `uniqueness`, `consistency`, `accuracy`, `timeliness`, `integrity`.
+  (`integrity` was added in revision 3; it was six before that.)
 - Any non-2xx response should include `{ "error": "..." }` (or `"detail"` —
   both are read). That string is shown to the user verbatim, so write it for
   a person, not a stack trace.
 
-### [BACKEND PROPOSAL] Dimension set
+### Dimension set — `integrity` is implemented (revision 3)
 
-The six keys above are confirmed and implemented as written. `timeliness` is
-kept rather than `integrity`, because integrity measures relationships
-between tables and has nothing to assess in a single standalone CSV, whereas
-timeliness is computable whenever the file carries a date column.
+The dimension set is **seven** keys. `integrity` ships in revision 3 and is
+present in every completed run from now on, as an additional key in `scores`
+rather than a replacement for any existing one. `timeliness` is unchanged and
+stays exactly as it was.
 
-A **seventh** key, `integrity`, will be added when multi-table sources
-(Salesforce Account-to-Contact, Oracle foreign keys) arrive in the next
-phase. It is not implemented now and will not appear in any response until
-then. When it does, it arrives as an additional key in `scores`, not a
-replacement for any existing one.
+Revision 2 said integrity "measures relationships between tables and has
+nothing to assess in a single standalone CSV". That holds for *cross-dataset*
+integrity, which is still not implemented. It does not hold for the whole
+dimension: a single file makes assertions about itself, and those are now
+checked.
 
-Two consequences worth planning for:
+#### What integrity checks today, and what it does not
 
-- `src/api/constants.js` will need one array entry added at that point, and
-  the tile grid should tolerate 7 tiles.
-- Treat a missing dimension key as "not assessed" rather than zero. Even
-  today, `timeliness` cannot be scored on a file with no parseable date
-  column. See the `notAssessed` field below.
+| Checked now, inside the uploaded file | Not checked, needs a second dataset |
+| --- | --- |
+| A value that determines another everywhere except on a few rows — a product code resolving to two different product names | Orphaned foreign keys pointing at a parent row that is not present |
+| A field left empty on exactly the rows where its partner field is populated | A mandatory parent record carrying no child row |
+| A postcode or ZIP contradicting the country or state on its own row | A lookup code resolved against a separate reference table |
+
+**This affects your UI copy.** Do not label the tile "referential integrity"
+and do not imply foreign keys were validated against other systems — none
+were. The PDF report states the distinction in writing, and a tile that
+contradicts the report in front of a client is worse than no tile. Plain
+"Integrity" is fine; the rule names in the drawer carry the detail.
+
+#### Rules you will see in the integrity drawer
+
+| Rule id | Bound to | `column` on the rule |
+| --- | --- | --- |
+| `INT-CARDINALITY` | the whole record | `null` |
+| `INT-DEPENDENT-FIELD` | the whole record | `null` |
+| `INT-POSTCODE-COUNTRY-{nn}` | one per matching column | the column name |
+| `INT-ZIP-STATE-{nn}` | one per matching column | the column name |
+
+A `null` `column` on a record-scoped rule is not new — the uniqueness
+dimension already does this — but integrity is the first dimension where the
+*majority* of rules are record-scoped, so it is worth re-checking that the
+drawer renders a missing column cleanly rather than printing "null".
+
+Individual violations from the record-scoped rules **do** carry a `column`:
+the field that was contradicted or left empty. So the drawer's rule row has
+no column while its examples do. That is intentional, not an inconsistency.
+
+#### `integrity` is frequently `notAssessed`, by design
+
+Integrity infers relationships from the file rather than being told them, so
+a file too small or too narrow to infer from reports `null` with a reason,
+exactly like `timeliness` on a file with no dates. Expect to render this
+often — more often than for any other dimension. Reasons you may receive:
+
+```json
+{
+  "notAssessed": {
+    "integrity": "Integrity describes how fields relate to one another, and this file has only one column."
+  }
+}
+```
+
+The other reasons follow the same shape: fewer than two populated critical
+data elements, fewer than 20 rows to infer from, or no applicable rule could
+be evaluated. All are written for a person and can be shown verbatim.
+
+#### One renamed pair
+
+Two rules moved out of `accuracy` into `integrity` and were renamed with it:
+
+| Was | Now |
+| --- | --- |
+| `ACC-POSTCODE-COUNTRY` | `INT-POSTCODE-COUNTRY` |
+| `ACC-ZIP-STATE` | `INT-ZIP-STATE` |
+
+They are cross-field checks — the finding is a contradiction between two
+columns of one row — so they belong to integrity rather than accuracy. If
+anything in the frontend keys off those rule ids, it needs updating; nothing
+in the current `src/` does, so this should be a no-op for you. The accuracy
+score will move slightly on files containing postcodes, because two rules
+left that dimension.
 
 ## Endpoints
 
@@ -150,13 +218,15 @@ Full detail for one run. Shape depends on `status`.
   "overall": 82.4, "records": 128400, "cdes": 18,
   "scores": {
     "completeness": 96.2, "validity": 91.0, "uniqueness": 84.3,
-    "consistency": 77.1, "accuracy": 68.4, "timeliness": 61.9
+    "consistency": 77.1, "accuracy": 68.4, "timeliness": 61.9,
+    "integrity": 93.6
   }
 }
 ```
 
-`scores` must contain all six dimension keys — a missing one renders as a
-blank tile in the UI.
+`scores` must contain all seven dimension keys — a missing one renders as a
+blank tile in the UI. A key whose value is `null` is a *scored-but-not-
+assessable* dimension and is a different case; see `notAssessed` below.
 
 #### [BACKEND PROPOSAL] Additional fields on a completed run
 
@@ -172,7 +242,10 @@ today.
   "columns": 34,
   "sampled": false,
   "sampledRows": null,
-  "notAssessed": { "timeliness": "No date column was detected in this file." },
+  "notAssessed": {
+    "timeliness": "No date column was detected in this file.",
+    "integrity": "Integrity compares fields against one another, and fewer than two populated critical data elements were found in this file."
+  },
   "parseWarnings": 12,
   "cdeOverridden": false
 }
@@ -407,7 +480,9 @@ and irrelevant to the real backend.)
 | `GET /runs/{id}/profile` | New endpoint | Optional, new panel |
 | `PUT /runs/{id}/cdes` | New endpoint | Optional, checkbox panel plus existing poll |
 | `column`, `severity`, `evaluated`, `failed` per rule | Additive fields | Optional, display only |
-| `integrity` as a seventh dimension | **Future** | One array entry, grid tolerates 7 |
+| `integrity` as a seventh dimension | **Implemented, rev 3** | One entry in `constants.js`, grid tolerates 7, tile copy must not claim cross-system checks |
+| `ACC-POSTCODE-COUNTRY` / `ACC-ZIP-STATE` renamed to `INT-*` | **Behavioural** | None unless rule ids are hard-coded; they are not in current `src/` |
 
-The only item requiring frontend work to avoid a wrong result is
-`notAssessed`. Everything else is optional.
+Two items require frontend work to avoid a wrong result: `notAssessed`,
+and the `integrity` tile — both because a dimension that could not be
+assessed must not be drawn as a zero. Everything else is optional.

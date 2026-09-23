@@ -5,7 +5,7 @@ Version 1.0 · Backend specification · Internal
 ## 1. Objective
 
 Accept an arbitrary CSV file exported from any source system, assess its data
-quality across six dimensions without prior knowledge of the schema, and
+quality across seven dimensions without prior knowledge of the schema, and
 return scores, rule-level breakdowns, failing-record examples and a PDF
 report.
 
@@ -24,7 +24,7 @@ two disagree, the contract wins.
 - Single CSV, TSV or delimited text file uploaded over HTTP
 - Automatic encoding, delimiter, header and type detection
 - Automatic critical data element (CDE) detection, with manual override
-- Six dimensions: completeness, validity, uniqueness, consistency, accuracy,
+- Seven dimensions: completeness, validity, uniqueness, consistency, accuracy,
   timeliness
 - Rule-level breakdown and failing-record examples
 - Summary and in-depth PDF reports
@@ -34,14 +34,14 @@ two disagree, the contract wins.
 
 | Deferred | Phase |
 | --- | --- |
-| **Integrity dimension** | Next — see section 3.1 |
+| **Cross-dataset integrity** | Next — see section 3.1. Within-file integrity is delivered. |
 | Salesforce, SFTP, Oracle connectors | Next |
 | Cross-source rollup | Next |
 | Data correction or cleansing | Later |
 | Client-specific rule packs | Later |
 | Authentication, multi-tenancy | Later |
 
-## 3. The six dimensions
+## 3. The seven dimensions
 
 | Dimension | Question it answers |
 | --- | --- |
@@ -51,45 +51,49 @@ two disagree, the contract wins.
 | Consistency | Is one field formatted the same way throughout? |
 | Accuracy | Are values plausible and non-contradictory? |
 | Timeliness | Is the data current, and are its dates coherent? |
+| Integrity | Do the relationships the file asserts about itself hold? |
 
-### 3.1 Integrity — deferred, not dropped
+### 3.1 Integrity — delivered within a file, deferred between files
 
-**Integrity is the seventh dimension and must be implemented in the phase
-following this one.** It is deferred here for a specific technical reason,
-not because it is unimportant.
+Integrity splits cleanly in two, and only one half needed a second dataset.
+That half was the reason the whole dimension was originally deferred.
 
-Integrity measures whether relationships between data hold: whether a
-child record's foreign key resolves to a parent, whether cross-entity
-dependencies are satisfied, whether referenced codes exist in their lookup
-table. A single standalone CSV has no second table to relate to, so the
-dimension would score near-vacuously and mislead anyone reading the report.
+**Delivered in this phase — relationships inside one file:**
+
+| Check | Rule id |
+| --- | --- |
+| A value that determines another everywhere except on a few rows | `INT-CARDINALITY` |
+| A field left empty on the rows where its partner field is populated | `INT-DEPENDENT-FIELD` |
+| A postcode that cannot belong to the country on its own row | `INT-POSTCODE-COUNTRY` |
+| A ZIP that cannot belong to the state on its own row | `INT-ZIP-STATE` |
+
+The first two infer the relationship from the file rather than assuming it:
+a dependency is enforced only once the file already demonstrates it across
+nearly every row, and only the rows contradicting it are reported. A file
+with no such structure reports `notAssessed` rather than a vacuous score.
+The last two moved here from accuracy, where they had been parked under the
+`move_to: integrity` marker; that marker is now gone from the rule pack.
+
+**Still deferred — relationships between datasets:**
+
+Orphaned foreign keys, mandatory parents with no child, and codes resolved
+against a separate lookup table all need a second dataset to exist. A single
+standalone CSV has no second table, so these would still score vacuously and
+mislead anyone reading the report.
 
 When multi-table sources arrive (Salesforce Account-to-Contact, Oracle tables
-with declared foreign keys), integrity becomes both meaningful and the most
-persuasive dimension in the set, because orphaned records are concrete and
-undeniable in a client conversation.
+with declared foreign keys), this half becomes the most persuasive material
+in the set, because an orphaned record is concrete and undeniable in a client
+conversation.
 
-**What is required to implement it, and what is already in place for it:**
-
-| Requirement | Status in this phase |
+| Requirement | Status |
 | --- | --- |
-| `integrity` in the dimension enum | Present in `dqa/config.py`, commented as deferred |
-| A dimension that can be marked unassessable | Implemented via `notAssessed`, used today by timeliness |
-| Stateful checks that see the whole dataset | Implemented, used today by uniqueness |
-| Rule pack section for integrity rules | Present in `rules/default_pack.yaml`, commented out with intended rules listed |
-| Multi-dataset run context | **Not implemented.** The run context holds one dataset. This is the one structural change integrity requires. |
-
-Intended integrity checks, to be implemented next phase: orphaned foreign
-keys, parent records with no children where the relationship is mandatory,
-cross-field dependency violations (populated country with blank state where
-the country requires one), code values absent from their referenced lookup,
-and cardinality violations on declared one-to-one relationships.
-
-Within a single file, cross-field dependency checks are the only integrity
-family that applies. Those are implemented in this phase under **accuracy**
-rather than left unimplemented, and should move to integrity when the
-dimension is introduced. They are tagged `move_to: integrity` in the rule
-pack so the migration is mechanical.
+| `integrity` in the dimension enum | **Implemented.** Present in `DIMENSIONS`; `DEFERRED_DIMENSIONS` is now empty |
+| A dimension that can be marked unassessable | Implemented via `notAssessed`, used by timeliness and integrity |
+| Stateful checks that see the whole dataset | Implemented; used by uniqueness and both new integrity checks |
+| Within-file integrity rules | **Implemented** in `dqa/checks/integrity.py` |
+| Cross-dataset integrity rules | **Not implemented.** Commented at the foot of `rules/default_pack.yaml` |
+| Multi-dataset run context | **Not implemented.** The run context holds one dataset. This remains the one structural change the cross-dataset half requires. |
 
 ## 4. Ingestion
 

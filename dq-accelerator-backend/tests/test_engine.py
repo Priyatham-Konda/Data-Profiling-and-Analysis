@@ -6,8 +6,10 @@ any of the eight real bugs found during the first integration run.
 """
 from __future__ import annotations
 
+import csv
 import json
 import os
+import re
 import shutil
 import threading
 from pathlib import Path
@@ -315,20 +317,28 @@ class TestTimeliness:
 # Scoring
 # --------------------------------------------------------------------------
 class TestScoring:
-    def test_all_six_dimensions_present(self, dirty):
+    def test_all_seven_dimensions_present(self, dirty):
         from dqa import config
 
         assert set(dirty["scores"]) == set(config.DIMENSIONS)
-        assert len(config.DIMENSIONS) == 6
+        assert len(config.DIMENSIONS) == 7
 
-    def test_integrity_is_deferred_not_emitted(self, dirty):
+    def test_integrity_is_emitted(self, dirty):
         from dqa import config
 
-        assert "integrity" not in dirty["scores"], (
-            "integrity must not appear until it is implemented, or the UI "
-            "renders a permanently blank tile"
+        assert "integrity" in dirty["scores"], (
+            "integrity is implemented and must appear in every response"
         )
-        assert "integrity" in config.DEFERRED_DIMENSIONS
+        assert config.DEFERRED_DIMENSIONS == []
+
+    def test_integrity_scores_or_explains_itself(self, dirty):
+        # A score or a reason, never a bare zero standing in for "could not
+        # tell" -- which is the whole point of the notAssessed field.
+        score = dirty["scores"]["integrity"]
+        if score is None:
+            assert dirty["notAssessed"].get("integrity")
+        else:
+            assert 0 <= score <= 100
 
     def test_clean_file_scores_well(self, data_root):
         clean = _run("clean.csv", "run_clean_score")
@@ -453,19 +463,365 @@ class TestRulePack:
         with pytest.raises(RulePackError):
             load_pack(bad)
 
-    def test_deferred_dimension_is_rejected(self, tmp_path):
+    def test_deferred_dimension_is_rejected(self, tmp_path, monkeypatch):
+        # Nothing is deferred now that integrity ships, but the guard has
+        # to keep working for whatever gets deferred next.
+        from dqa import config
         from dqa.rules.loader import RulePackError, load_pack
 
-        bad = tmp_path / "integrity.yaml"
+        monkeypatch.setattr(config, "DEFERRED_DIMENSIONS", ["lineage"])
+        bad = tmp_path / "lineage.yaml"
         bad.write_text(
-            "rules:\n  - id: INT-1\n    name: Orphan\n"
-            "    dimension: integrity\n    check: not_null\n"
+            "rules:\n  - id: LIN-1\n    name: Lineage\n"
+            "    dimension: lineage\n    check: not_null\n"
         )
         with pytest.raises(RulePackError, match="deferred"):
             load_pack(bad)
 
-    def test_cross_field_rules_are_tagged_for_migration(self):
+    def test_unknown_dimension_is_rejected(self, tmp_path):
+        from dqa.rules.loader import RulePackError, load_pack
+
+        bad = tmp_path / "nonsense.yaml"
+        bad.write_text(
+            "rules:\n  - id: X-1\n    name: Nonsense\n"
+            "    dimension: nonsense\n    check: not_null\n"
+        )
+        with pytest.raises(RulePackError, match="unknown dimension"):
+            load_pack(bad)
+
+    def test_cross_field_rules_moved_into_integrity(self):
         from dqa.rules.loader import load_pack
 
-        tagged = [r for r in load_pack() if r.move_to == "integrity"]
-        assert tagged, "cross-field rules must be tagged for the integrity move"
+        pack = load_pack()
+        integrity_ids = {r.id for r in pack if r.dimension == "integrity"}
+        assert {"INT-POSTCODE-COUNTRY", "INT-ZIP-STATE"} <= integrity_ids
+        assert not [r for r in pack if r.move_to], (
+            "move_to is a migration marker; no rule should still carry one"
+        )
+
+
+def _run_file(path, run_id: str):
+    """Run the engine over an arbitrary CSV rather than a named fixture."""
+    from dqa.models import RunContext
+    from dqa.runner import run_assessment
+    from dqa.store import artifacts, registry
+
+    artifacts.ensure(run_id)
+    shutil.copy(path, artifacts.source_path(run_id))
+    registry.create(run_id, path.name)
+    artifacts.write_meta(run_id, {"id": run_id, "file": path.name,
+                                  "status": "processing"})
+    ctx = RunContext(
+        run_id=run_id,
+        source_path=str(artifacts.source_path(run_id)),
+        original_filename=path.name,
+        cancel_event=threading.Event(),
+    )
+    return run_assessment(ctx)
+
+
+_CODE_NAMES = {
+    "P-100": "Widget", "P-200": "Sprocket", "P-300": "Gasket",
+    "P-400": "Flange", "P-500": "Bearing", "P-600": "Coupling",
+}
+_ZIP_CITIES = {
+    "10001": "New York", "60601": "Chicago", "94105": "San Francisco",
+    "02108": "Boston", "73301": "Austin", "98101": "Seattle",
+}
+
+
+def _related_csv(path, rows: int = 120, contradictions: dict | None = None):
+    """A file where product_code determines product_name on every row.
+
+    `contradictions` maps a row index to a wrong product_name, which is what
+    the integrity dimension should report and nothing else should.
+    """
+    codes = list(_CODE_NAMES)
+    zips = list(_ZIP_CITIES)
+    out = []
+    for i in range(rows):
+        code = codes[i % len(codes)]
+        zipc = zips[i % len(zips)]
+        out.append({
+            "customer_id": f"C{1000 + i}",
+            "customer_name": f"Customer {i}",
+            "product_code": code,
+            "product_name": _CODE_NAMES[code],
+            "postcode": zipc,
+            "city": _ZIP_CITIES[zipc],
+        })
+    for index, wrong_name in (contradictions or {}).items():
+        assert out[index]["product_name"] != wrong_name, (
+            f"row {index} already holds {wrong_name}; that is no contradiction"
+        )
+        out[index]["product_name"] = wrong_name
+
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(out[0]))
+        writer.writeheader()
+        writer.writerows(out)
+    return path
+
+
+class TestIntegrity:
+    """The seventh dimension, assessed within a single file.
+
+    The first test exists because the check originally measured its
+    consistency threshold across distinct KEYS rather than rows, so any file
+    with fewer than twenty distinct keys discarded every pair and the
+    dimension silently reported nothing at all. A check that can never fire
+    passes any test that only asserts it did not crash.
+    """
+
+    def test_cardinality_reports_exactly_the_contradictions(self, data_root, tmp_path):
+        path = _related_csv(
+            tmp_path / "contradiction.csv",
+            contradictions={7: "Gasket", 33: "Widget"},
+        )
+        results = _run_file(path, "run_int_contradiction")
+
+        rule = results["rules"].get("INT-CARDINALITY")
+        assert rule is not None, "INT-CARDINALITY never evaluated"
+        assert rule["failed"] == 2, (
+            f"expected the 2 seeded contradictions, got {rule['failed']}"
+        )
+        assert results["ruleErrors"] == {}
+
+    def test_cardinality_is_silent_on_a_consistent_file(self, data_root, tmp_path):
+        path = _related_csv(tmp_path / "consistent.csv")
+        results = _run_file(path, "run_int_consistent")
+
+        rule = results["rules"].get("INT-CARDINALITY")
+        assert rule is not None, "INT-CARDINALITY never evaluated"
+        assert rule["failed"] == 0, "a self-consistent file must produce no findings"
+        assert results["scores"]["integrity"] == 100.0
+
+    def test_contradiction_names_both_sides(self, data_root, tmp_path):
+        from dqa.store import artifacts
+
+        path = _related_csv(tmp_path / "explained.csv", contradictions={33: "Widget"})
+        _run_file(path, "run_int_explained")
+        examples = artifacts.read_violations(
+            "run_int_explained", "integrity", "INT-CARDINALITY"
+        )
+        assert examples, "a contradiction must come with an example"
+        reason = examples[0]["reason"]
+        # The reason must name the determinant and both values, or nobody
+        # reading the drawer can tell what was contradicted.
+        assert "product_code" in reason
+        assert "Flange" in reason and "Widget" in reason
+
+    def test_single_column_file_is_not_assessed(self, data_root):
+        results = _run("single_column.csv", "run_int_single")
+        assert results["scores"]["integrity"] is None
+        assert "column" in results["notAssessed"]["integrity"]
+
+    def test_clean_file_has_no_integrity_failures(self, data_root):
+        results = _run("clean.csv", "run_int_clean")
+        integrity = [r for r in results["rules"].values()
+                     if r["dimension"] == "integrity"]
+        assert integrity, "clean.csv should still exercise integrity rules"
+        assert all(r["failed"] == 0 for r in integrity), (
+            "integrity must not invent findings on a clean file"
+        )
+
+
+class TestEmbeddedNewlines:
+    """Quoted fields containing newlines, as every Salesforce export has.
+
+    A real 69-column export failed to ingest at all: the delimiter was
+    scored over physical lines, one record holding a multi-line description
+    shredded into several fragments, comma collapsed to a modal field count
+    of 1 and was discarded by the `fields < 2` guard, and ':' won by being
+    the only candidate left. Parsing then died on the first quote.
+    """
+
+    @staticmethod
+    def _multiline_csv(path, records: int = 40):
+        rows = []
+        for i in range(records):
+            note = (
+                f"Line one for {i}\n"
+                "Line two: a colon, and a comma\n"
+                "Line three"
+            )
+            rows.append({
+                "customer_id": f"C{1000 + i}",
+                "customer_name": f"Customer {i}",
+                "city": ["Boston", "Austin", "Chicago"][i % 3],
+                "description": note,
+            })
+        with path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+        return path
+
+    def test_delimiter_is_the_comma_not_the_prose(self, tmp_path):
+        from dqa.ingest.reader import detect_delimiter
+
+        path = self._multiline_csv(tmp_path / "multiline.csv")
+        sample = path.read_text(encoding="utf-8")
+        delimiter, confidence = detect_delimiter(sample)
+        assert delimiter == ",", (
+            f"detected {delimiter!r}; a colon inside a quoted note is not a delimiter"
+        )
+        assert confidence > 0.7
+
+    def test_record_count_is_records_not_lines(self, data_root, tmp_path):
+        path = self._multiline_csv(tmp_path / "counted.csv", records=40)
+        # Three physical lines per record, so a line count would say ~120.
+        assert len(path.read_text(encoding="utf-8").splitlines()) > 100
+
+        results = _run_file(path, "run_multiline_count")
+        assert results["records"] == 40, (
+            f"reported {results['records']} records for a 40-record file"
+        )
+        assert results["ruleErrors"] == {}
+
+
+class TestTimezoneAwareDates:
+    """Salesforce timestamps carry an offset; hand-made files usually do not.
+
+    Mixed, they raise "Cannot compare tz-naive and tz-aware timestamps", and
+    the executor drops any rule that errors -- so the rule disappears from
+    scoring rather than failing visibly.
+    """
+
+    def test_offset_dates_do_not_error_any_rule(self, data_root, tmp_path):
+        path = tmp_path / "tzaware.csv"
+        rows = []
+        for i in range(40):
+            rows.append({
+                "customer_id": f"C{2000 + i}",
+                "customer_name": f"Customer {i}",
+                "city": ["Boston", "Austin", "Chicago"][i % 3],
+                "created_date": f"2026-09-{(i % 28) + 1:02d} 17:14:44+00:00",
+                "last_activity_date": f"2025-01-{(i % 28) + 1:02d} 09:00:00+00:00",
+            })
+        with path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+
+        results = _run_file(path, "run_tz_aware")
+        assert results["ruleErrors"] == {}, (
+            f"timezone-aware dates errored rules: {results['ruleErrors']}"
+        )
+
+    def test_naive_dates_are_unchanged_by_the_utc_normalisation(self):
+        import pandas as pd
+
+        from dqa.checks.validity import _parse_dates
+
+        naive = pd.Series(["2024-03-01 12:00:00", "2024-06-15 08:30:00"])
+        parsed = _parse_dates(naive)
+        # Parsing with utc=True and then dropping the zone must be the
+        # identity for input that never carried one, or every existing
+        # exact-count date assertion would shift underneath us.
+        assert parsed.iloc[0] == pd.Timestamp("2024-03-01 12:00:00")
+        assert parsed.iloc[1] == pd.Timestamp("2024-06-15 08:30:00")
+        assert parsed.dt.tz is None
+
+
+class TestReportRendering:
+    """The PDF is what the client actually reads.
+
+    The example tables once rendered as empty rows -- borders and headers,
+    no values -- in every viewer. The text was present in the PDF and
+    extracted correctly, so nothing downstream of the template looked wrong.
+    The cause was font substitution: the tables ask for DejaVu Sans Mono,
+    and where it is missing the fallback landed on a font that could not be
+    embedded, so WeasyPrint emitted a Type 3 font that most viewers draw as
+    nothing at all.
+    """
+
+    @staticmethod
+    def _render(run_id: str):
+        from dqa.report.renderer import render_report
+
+        _run("dirty_known.csv", run_id)
+        return render_report(run_id, "in-depth")
+
+    def test_no_type3_fonts(self, data_root):
+        pypdf = pytest.importorskip("pypdf")
+        pdf = self._render("run_report_type3")
+        reader = pypdf.PdfReader(str(pdf))
+
+        offenders = []
+        for number, page in enumerate(reader.pages, 1):
+            resources = (page.get("/Resources") or {})
+            try:
+                resources = resources.get_object()
+                fonts = (resources.get("/Font") or {}).get_object()
+            except Exception:
+                continue
+            for obj in (fonts or {}).values():
+                font = obj.get_object()
+                if font.get("/Subtype") == "/Type3":
+                    offenders.append((number, str(font.get("/BaseFont"))))
+
+        assert not offenders, (
+            "Type 3 fonts render as blank in most PDF viewers, so these pages "
+            f"would reach a client empty: {offenders}. Install the DejaVu "
+            "fonts; the container does it via fonts-dejavu-core."
+        )
+
+    def test_example_tables_carry_their_values(self, data_root):
+        pypdf = pytest.importorskip("pypdf")
+        pdf = self._render("run_report_values")
+        reader = pypdf.PdfReader(str(pdf))
+        text = chr(10).join((p.extract_text() or "") for p in reader.pages)
+
+        assert "Example failing records" in text
+        tail = text[text.index("Example failing records"):]
+        # A row number followed by content is the cheapest proof the cells
+        # hold values rather than being drawn as empty bordered rows.
+        rows = [ln for ln in tail.splitlines() if re.match(r"^\s*\d+\s+\S", ln)]
+        assert len(rows) >= 10, (
+            f"only {len(rows)} populated example rows in the in-depth report"
+        )
+
+    def test_what_this_means_lists_every_dimension_weakest_first(self, data_root):
+        from dqa import config
+        from dqa.report.renderer import build_context
+
+        _run("dirty_known.csv", "run_report_ranked")
+        ctx = build_context("run_report_ranked", "in-depth")
+
+        ranked = ctx["ranked"]
+        assert len(ranked) == len(config.DIMENSIONS), (
+            "every dimension belongs in 'What this means', not just the worst three"
+        )
+        scored = [d["score"] for d in ranked if d["score"] is not None]
+        assert scored == sorted(scored), "scored dimensions must run weakest first"
+
+        unscored = [d for d in ranked if d["score"] is None]
+        if unscored:
+            # Unscored sort last, carrying a reason rather than a number.
+            assert ranked[-1]["score"] is None
+            assert all(d["not_assessed"] for d in unscored)
+
+    def test_examples_cover_every_failing_rule_the_table_lists(self, data_root):
+        from dqa.report.renderer import build_context
+        from dqa.store import artifacts
+
+        run_id = "run_report_cover"
+        _run("dirty_known.csv", run_id)
+        ctx = build_context(run_id, "in-depth")
+
+        for dimension in ctx["dimensions"]:
+            shown = {e["rule"]["rule_id"] for e in dimension["examples"]}
+            missing = []
+            for rule in dimension["rules"][: ctx["rules_shown"]]:
+                if not rule.get("failed") or rule["rule_id"] in shown:
+                    continue
+                if artifacts.read_violations(
+                    run_id, dimension["key"], rule["rule_id"], limit=1
+                ):
+                    missing.append(rule["rule_id"])
+            assert not missing, (
+                f"{dimension['key']}: listed as failing but no examples below: "
+                f"{missing}"
+            )
+
