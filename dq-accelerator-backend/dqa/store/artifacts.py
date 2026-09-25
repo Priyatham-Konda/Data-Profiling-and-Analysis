@@ -16,6 +16,7 @@ hunting for stray files.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import threading
@@ -26,6 +27,8 @@ from typing import Any, Optional
 
 from .. import config
 from ..models import DatasetProfile, Violation
+
+log = logging.getLogger("dqa.store")
 
 
 def run_dir(run_id: str) -> Path:
@@ -82,12 +85,24 @@ def _write_json(path: Path, payload: Any) -> None:
 
 
 def _read_json(path: Path) -> Optional[dict]:
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
+    # The same Windows contention as _write_json, seen from the reader's
+    # side: a read landing while the writer's os.replace holds the file
+    # raises PermissionError. Treated as "no file", it made GET /runs/{id}
+    # fall back to its defaults and report a run midway through Evaluating
+    # as Ingesting, stage 0 -- a progress bar jumping backwards on a state
+    # the run was never in. Retried with the writer's backoff instead.
+    for attempt in range(_REPLACE_ATTEMPTS):
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS - 1:
+                return None
+            time.sleep(_REPLACE_BACKOFF * (attempt + 1))
+        except (json.JSONDecodeError, OSError):
+            return None
+    return None
 
 
 def write_meta(run_id: str, meta: dict) -> None:
@@ -138,6 +153,31 @@ def write_violations(
     with path.open("w", encoding="utf-8") as fh:
         for violation in violations:
             fh.write(json.dumps(violation.to_api()) + "\n")
+
+
+def clear_violations(run_id: str) -> None:
+    """Remove every stored example before a re-score writes new ones.
+
+    write_violations only writes rules that fail this time. Without this, a
+    rule that failed under the previous CDE selection and passes under the
+    new one would keep serving the old selection's examples.
+    """
+    shutil.rmtree(run_dir(run_id) / "violations", ignore_errors=True)
+
+
+def clear_reports(run_id: str) -> None:
+    """Remove rendered reports, which describe scores that no longer apply.
+
+    GET /runs/{id}/report serves a cached file when one exists, so after a
+    re-score it would otherwise hand out the previous result.
+    """
+    for path in run_dir(run_id).glob("report-*.*"):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            # Held open on Windows by a download in flight. It is rendered
+            # again on the next request once the handle is released.
+            log.warning("could not remove stale report %s", path)
 
 
 def read_violations(

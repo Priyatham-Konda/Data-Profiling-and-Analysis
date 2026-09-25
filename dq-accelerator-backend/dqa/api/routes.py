@@ -145,6 +145,19 @@ async def get_run(run_id: str) -> Any:
             "progress": meta.get("progress", 0.0),
         }
 
+    if status == "awaiting_cdes":
+        # No scores and no overall: Evaluating has not run. The three counts
+        # below were all established during Profiling, which is what lets
+        # this state exist at all.
+        return {
+            "id": run_id,
+            "file": record["file"],
+            "status": "awaiting_cdes",
+            "records": meta.get("records", 0),
+            "columns": meta.get("columns", 0),
+            "cdes": meta.get("cdes", 0),
+        }
+
     if status == "failed":
         return {
             "id": run_id,
@@ -223,10 +236,14 @@ async def override_cdes(run_id: str, payload: CdeOverride) -> Any:
     record = registry.get(run_id)
     if record is None:
         return _error(404, "That assessment could not be found.")
-    if record["status"] != "completed":
+    # Two starting states, one behaviour. From `awaiting_cdes` this call is
+    # what starts Evaluating and Scoring for the first time; from
+    # `completed` it re-scores an already-finished run against a different
+    # selection. The request and response are identical either way.
+    if record["status"] not in ("awaiting_cdes", "completed"):
         return _error(
             409,
-            "The columns can only be changed once the assessment has finished.",
+            "The columns can only be set once profiling has finished.",
         )
 
     profile = artifacts.read_profile(run_id)
@@ -388,7 +405,9 @@ async def delete_run(run_id: str) -> Any:
 
     # Cancel first: the contract states that deleting a processing run
     # cancels the underlying job, and the UI warns the user of exactly that.
-    if record["status"] == "processing":
+    # A run parked at `awaiting_cdes` counts as unfinished work for this
+    # purpose, so it is cancelled rather than treated as a finished run.
+    if record["status"] in ("processing", "awaiting_cdes"):
         cancel(run_id)
 
     artifacts.purge(run_id)

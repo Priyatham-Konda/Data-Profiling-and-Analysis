@@ -2,7 +2,7 @@
 
 Assesses an arbitrary CSV export across seven data quality dimensions and
 returns scores, rule-level breakdowns, failing-record examples and a PDF
-report. Implements `API_CONTRACT.md` revision 3.
+report. Implements `API_CONTRACT.md` revision 4.
 
 The point is that it receives files it has never seen, with no schema and no
 cooperation from the source system. Column types, semantic meaning and
@@ -111,12 +111,21 @@ POST /runs ─▶ queue ─▶ ThreadPoolExecutor
                    │
    Stage 1 Ingesting   encoding, delimiter, header detection
    Stage 2 Profiling   chunk stream ─▶ column statistics ─▶ CDE detection
+   ── pause: status awaiting_cdes until PUT /runs/{id}/cdes confirms ──
    Stage 3 Evaluating  chunk stream ─▶ rule execution
    Stage 4 Scoring     aggregate ─▶ results.json
 ```
 
 Two streaming passes, 50,000 rows per chunk. Cancellation is checked between
 chunks, so deleting a processing run actually stops it.
+
+**The pipeline pauses after Profiling.** A new upload runs Ingesting and
+Profiling, writes `profile.json`, and parks at `awaiting_cdes` so a person
+can confirm the detected critical data elements before anything is scored.
+`PUT /runs/{id}/cdes` then runs Evaluating and Scoring by resuming from the
+stored profile — it neither re-reads nor re-profiles the file, and it
+produces scores identical to an uninterrupted run
+(`tests/test_engine.py::TestResumeFromProfile` pins that equivalence).
 
 ```
 dqa/

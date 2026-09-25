@@ -35,3 +35,6 @@ venv/
 # Editors
 .vscode/
 .idea/
+
+# Working notes from the frontend team, kept locally rather than in the repo.
+BACKEND_CHANGES.md

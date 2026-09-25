@@ -825,3 +825,145 @@ class TestReportRendering:
                 f"{missing}"
             )
 
+
+class TestResumeFromProfile:
+    """The second half resumes from profile.json instead of re-profiling.
+
+    That is only safe if the stored profile round-trips exactly. These tests
+    compare a resumed run against a straight-through run of the same file;
+    any field lost or mangled in the JSON round trip shows up as a score
+    that differs.
+    """
+
+    @staticmethod
+    def _paused(fixture: str, run_id: str):
+        from dqa.models import RunContext
+        from dqa.runner import run_assessment
+        from dqa.store import artifacts, registry
+
+        artifacts.ensure(run_id)
+        shutil.copy(FIXTURES / fixture, artifacts.source_path(run_id))
+        registry.create(run_id, fixture)
+        artifacts.write_meta(run_id, {"id": run_id, "file": fixture,
+                                      "status": "processing"})
+        ctx = RunContext(
+            run_id=run_id,
+            source_path=str(artifacts.source_path(run_id)),
+            original_filename=fixture,
+            cancel_event=threading.Event(),
+        )
+        return ctx, run_assessment(ctx, stop_after_profiling=True)
+
+    @staticmethod
+    def _resume(ctx, columns):
+        from dqa.runner import resume_from_profile
+
+        return resume_from_profile(ctx, columns)
+
+    @pytest.mark.parametrize("fixture", ["dirty_known.csv", "clean.csv", "messy_format.csv"])
+    def test_resumed_scores_equal_straight_through(self, data_root, fixture):
+        straight = _run(fixture, f"run_straight_{fixture}")
+
+        ctx, parked = self._paused(fixture, f"run_parked_{fixture}")
+        resumed = self._resume(ctx, parked["cdeColumns"])
+
+        assert resumed["scores"] == straight["scores"], (
+            "resuming from the stored profile changed the scores, so the "
+            "profile did not round-trip through JSON intact"
+        )
+        assert resumed["overall"] == straight["overall"]
+        assert resumed["records"] == straight["records"]
+        assert set(resumed["rules"]) == set(straight["rules"])
+        for rule_id, rule in straight["rules"].items():
+            assert resumed["rules"][rule_id]["failed"] == rule["failed"], rule_id
+
+    def test_pausing_writes_no_results(self, data_root):
+        from dqa.store import artifacts
+
+        ctx, parked = self._paused("dirty_known.csv", "run_pause_only")
+        assert artifacts.read_results("run_pause_only") is None, (
+            "nothing is evaluated before confirmation, so no results may exist"
+        )
+        meta = artifacts.read_meta("run_pause_only")
+        assert meta["status"] == "awaiting_cdes"
+        assert meta["records"] == parked["records"] == 500
+
+    def test_resume_does_not_re_profile(self, data_root, monkeypatch):
+        # The point of resuming: the profiling pass must not run again.
+        from dqa.profiling import stats
+
+        ctx, parked = self._paused("dirty_known.csv", "run_no_reprofile")
+
+        def boom(*args, **kwargs):
+            raise AssertionError("resume re-ran the profiler")
+
+        monkeypatch.setattr(stats.DatasetProfiler, "update", boom)
+        self._resume(ctx, parked["cdeColumns"])
+
+    def test_rescore_resets_an_earlier_override(self, data_root):
+        # The stored profile carries the previous selection. detect() must
+        # reset it, or confirming the detected set after an override would
+        # still be judged against the override.
+        ctx, parked = self._paused("dirty_known.csv", "run_reset_override")
+        detected = parked["cdeColumns"]
+
+        first = self._resume(ctx, detected[:-1])
+        assert first["cdeOverridden"] is True
+
+        second = self._resume(ctx, detected)
+        assert second["cdeOverridden"] is False
+        assert sorted(second["cdeColumns"]) == sorted(detected)
+
+    def test_rescore_drops_examples_from_the_previous_selection(self, data_root):
+        from dqa.store import artifacts
+
+        ctx, parked = self._paused("dirty_known.csv", "run_stale_examples")
+        detected = parked["cdeColumns"]
+        self._resume(ctx, detected)
+        before = {p.name for p in (artifacts.run_dir("run_stale_examples")
+                                   / "violations").rglob("*.jsonl")}
+
+        # Narrow to a single column; most previous rules no longer apply.
+        narrowed = self._resume(ctx, detected[:1])
+        after = {p.name for p in (artifacts.run_dir("run_stale_examples")
+                                  / "violations").rglob("*.jsonl")}
+
+        live = {f"{rid}.jsonl" for rid, r in narrowed["rules"].items() if r["failed"]}
+        assert after <= live, (
+            f"stale example files survived the re-score: {sorted(after - live)}"
+        )
+        assert before - after, "narrowing the selection should drop some examples"
+
+
+class TestArtifactContention:
+    """Windows refuses a read while os.replace holds the file.
+
+    Unretried, the poller's read failed, GET /runs/{id} fell back to its
+    defaults, and a run midway through Evaluating was reported as Ingesting,
+    stage 0 -- visible to the frontend as a progress bar jumping backwards.
+    """
+
+    def test_transient_permission_error_is_retried(self, tmp_path, monkeypatch):
+        from dqa.store import artifacts
+
+        path = tmp_path / "meta.json"
+        path.write_text('{"stage": "Evaluating", "stageIndex": 2}', encoding="utf-8")
+
+        real_read = Path.read_text
+        failures = {"left": 3}
+
+        def contended(self, *args, **kwargs):
+            if self == path and failures["left"]:
+                failures["left"] -= 1
+                raise PermissionError(13, "The process cannot access the file")
+            return real_read(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", contended)
+        assert artifacts._read_json(path) == {"stage": "Evaluating", "stageIndex": 2}
+        assert failures["left"] == 0, "the read should have been retried through"
+
+    def test_a_missing_file_is_still_just_missing(self, tmp_path):
+        from dqa.store import artifacts
+
+        assert artifacts._read_json(tmp_path / "absent.json") is None
+

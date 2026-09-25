@@ -65,6 +65,16 @@ SEVERITY_WEIGHTS: dict[str, int] = {"high": 3, "medium": 2, "low": 1}
 STAGES: list[str] = ["Ingesting", "Profiling", "Evaluating", "Scoring"]
 
 # --------------------------------------------------------------------------
+# Run statuses -- the contract with the frontend (API_CONTRACT.md revision 4)
+# --------------------------------------------------------------------------
+# `awaiting_cdes` sits between Profiling and Evaluating: the pipeline stops
+# once the critical data elements have been detected and waits for a person
+# to confirm them. Nothing is scored until they do, so a run in this state
+# carries no scores and no overall -- only the three counts Profiling
+# already established.
+RUN_STATUSES: list[str] = ["processing", "awaiting_cdes", "completed", "failed"]
+
+# --------------------------------------------------------------------------
 # Limits
 # --------------------------------------------------------------------------
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024        # 500 MB, returns 413

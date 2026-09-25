@@ -41,12 +41,45 @@ def _upload(client, fixture: str = "dirty_known.csv"):
         )
 
 
-def _wait(client, run_id: str, timeout: float = 120.0) -> dict:
+def _wait_for_cdes(client, run_id: str, timeout: float = 120.0) -> dict:
+    """Poll until the run parks at awaiting_cdes, and return it there."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         body = client.get(f"/api/runs/{run_id}").json()
-        if body.get("status") in ("completed", "failed"):
+        if body.get("status") in ("awaiting_cdes", "completed", "failed"):
             return body
+        time.sleep(0.4)
+    raise AssertionError(f"run {run_id} did not reach awaiting_cdes in {timeout}s")
+
+
+def _detected_cdes(client, run_id: str) -> list[str]:
+    profile = client.get(f"/api/runs/{run_id}/profile").json()
+    return [c["name"] for c in profile["columns"] if c["isCde"]]
+
+
+def _wait(client, run_id: str, timeout: float = 120.0) -> dict:
+    """Poll until the run finishes, confirming the detected columns on the way.
+
+    Runs no longer go straight through: they park at awaiting_cdes until
+    somebody confirms the critical data elements. Tests that assert the
+    finished shape still want that to happen, so this confirms the detected
+    set and carries on. Use _wait_for_cdes to observe the paused state.
+    """
+    deadline = time.time() + timeout
+    confirmed = False
+    while time.time() < deadline:
+        body = client.get(f"/api/runs/{run_id}").json()
+        status = body.get("status")
+        if status in ("completed", "failed"):
+            return body
+        if status == "awaiting_cdes" and not confirmed:
+            columns = _detected_cdes(client, run_id)
+            assert columns, "profiling detected no critical data elements"
+            response = client.put(
+                f"/api/runs/{run_id}/cdes", json={"columns": columns}
+            )
+            assert response.status_code == 202, response.text
+            confirmed = True
         time.sleep(0.4)
     raise AssertionError(f"run {run_id} did not finish within {timeout}s")
 
@@ -313,3 +346,153 @@ class TestHealth:
         body = client.get("/health").json()
         assert body["status"] == "ok"
         assert len(body["dimensions"]) == 7
+
+
+class TestCdeConfirmation:
+    """Revision 4: the pipeline pauses after Profiling.
+
+    A new upload stops at awaiting_cdes and scores nothing until somebody
+    confirms which columns are critical data elements. BACKEND_CHANGES.md
+    from the frontend describes the behaviour; each test below pins one
+    sentence of it.
+    """
+
+    def test_new_upload_parks_instead_of_completing(self, client):
+        run_id = _upload(client).json()["id"]
+        body = _wait_for_cdes(client, run_id)
+        assert body["status"] == "awaiting_cdes", (
+            "a fresh upload must stop for confirmation, not run to the end"
+        )
+
+    def test_awaiting_shape_has_counts_and_no_scores(self, client):
+        run_id = _upload(client).json()["id"]
+        body = _wait_for_cdes(client, run_id)
+
+        assert set(body) == {"id", "file", "status", "records", "columns", "cdes"}, (
+            f"unexpected keys {sorted(body)}; nothing has been scored yet, so "
+            "there must be no scores and no overall"
+        )
+        assert body["records"] == 500
+        assert body["columns"] == 20
+        assert body["cdes"] > 0
+
+    def test_list_shows_the_parked_run_without_an_overall(self, client):
+        run_id = _upload(client).json()["id"]
+        _wait_for_cdes(client, run_id)
+
+        listed = next(r for r in client.get("/api/runs").json() if r["id"] == run_id)
+        assert listed["status"] == "awaiting_cdes"
+        assert "overall" not in listed
+
+    def test_profile_is_available_while_parked(self, client):
+        run_id = _upload(client).json()["id"]
+        _wait_for_cdes(client, run_id)
+
+        response = client.get(f"/api/runs/{run_id}/profile")
+        assert response.status_code == 200
+        columns = response.json()["columns"]
+        assert len(columns) == 20
+        assert any(c["isCde"] for c in columns)
+
+    def test_confirming_starts_scoring_for_the_first_time(self, client):
+        run_id = _upload(client).json()["id"]
+        _wait_for_cdes(client, run_id)
+        columns = _detected_cdes(client, run_id)
+
+        response = client.put(f"/api/runs/{run_id}/cdes", json={"columns": columns})
+        assert response.status_code == 202
+        assert response.json() == {"id": run_id, "status": "processing"}
+
+        body = _wait(client, run_id)
+        assert body["status"] == "completed"
+        assert body["overall"] is not None
+        assert set(body["scores"]) >= {"completeness", "integrity"}
+
+    def test_confirming_the_detected_set_is_not_an_override(self, client):
+        # Every run now goes through PUT /cdes. If confirming counted as an
+        # override, cdeOverridden would be true on every run and mean nothing.
+        run_id = _upload(client).json()["id"]
+        _wait_for_cdes(client, run_id)
+        columns = _detected_cdes(client, run_id)
+
+        client.put(f"/api/runs/{run_id}/cdes", json={"columns": columns})
+        body = _wait(client, run_id)
+        assert body["cdeOverridden"] is False
+
+    def test_changing_the_set_is_an_override(self, client):
+        run_id = _upload(client).json()["id"]
+        _wait_for_cdes(client, run_id)
+        detected = _detected_cdes(client, run_id)
+        assert len(detected) >= 2
+        trimmed = detected[:-1]
+
+        client.put(f"/api/runs/{run_id}/cdes", json={"columns": trimmed})
+        body = _wait(client, run_id)
+        assert body["cdeOverridden"] is True
+        assert body["cdes"] == len(trimmed)
+
+    def test_empty_selection_is_still_rejected(self, client):
+        run_id = _upload(client).json()["id"]
+        _wait_for_cdes(client, run_id)
+
+        response = client.put(f"/api/runs/{run_id}/cdes", json={"columns": []})
+        assert response.status_code == 400
+        assert "error" in response.json()
+        # And the rejection must not have started anything.
+        assert client.get(f"/api/runs/{run_id}").json()["status"] == "awaiting_cdes"
+
+    def test_unknown_column_is_still_rejected(self, client):
+        run_id = _upload(client).json()["id"]
+        _wait_for_cdes(client, run_id)
+
+        response = client.put(
+            f"/api/runs/{run_id}/cdes", json={"columns": ["no_such_column"]}
+        )
+        assert response.status_code == 400
+        assert "no_such_column" in response.json()["error"]
+        assert client.get(f"/api/runs/{run_id}").json()["status"] == "awaiting_cdes"
+
+    def test_completed_run_can_still_be_rescored(self, client):
+        # The revision-2 behaviour must survive: PUT /cdes on a finished run
+        # re-scores it against a different selection.
+        run_id = _upload(client).json()["id"]
+        first = _wait(client, run_id)
+        assert first["status"] == "completed"
+
+        detected = _detected_cdes(client, run_id)
+        response = client.put(
+            f"/api/runs/{run_id}/cdes", json={"columns": detected[:-1]}
+        )
+        assert response.status_code == 202
+        second = _wait(client, run_id)
+        assert second["status"] == "completed"
+        assert second["cdeOverridden"] is True
+
+    def test_deleting_a_parked_run_removes_it(self, client):
+        run_id = _upload(client).json()["id"]
+        _wait_for_cdes(client, run_id)
+
+        response = client.delete(f"/api/runs/{run_id}")
+        assert response.status_code == 204
+        assert client.get(f"/api/runs/{run_id}").status_code == 404
+        assert all(r["id"] != run_id for r in client.get("/api/runs").json())
+
+    def test_mid_profiling_run_rejects_profile_and_cdes(self, client):
+        # Built directly rather than raced against a live job: a run that is
+        # still processing and has no profile yet is exactly the moment the
+        # contract says both endpoints must refuse.
+        from dqa.store import artifacts, registry
+
+        run_id = "run_mid_profiling"
+        registry.create(run_id, "in_progress.csv")
+        artifacts.ensure(run_id)
+        artifacts.write_meta(run_id, {"id": run_id, "status": "processing",
+                                      "stage": "Profiling", "stageIndex": 1})
+
+        profile = client.get(f"/api/runs/{run_id}/profile")
+        assert profile.status_code == 409
+
+        cdes = client.put(f"/api/runs/{run_id}/cdes", json={"columns": ["a"]})
+        assert cdes.status_code == 409
+        assert "error" in cdes.json()
+

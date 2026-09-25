@@ -8,6 +8,14 @@ endpoint below has a matching mock handler in `src/mocks/handlers.js`.
 Point the frontend at a real implementation of this contract by setting
 `VITE_API_BASE_URL` in `.env.local`. No frontend code changes are needed.
 
+> **Revision 4 — critical data elements are confirmed before scoring.**
+> A run no longer goes straight from upload to scores. It pauses after
+> Profiling in a new status, **`awaiting_cdes`**, and nothing is scored
+> until a person confirms the detected columns with `PUT /runs/{id}/cdes`.
+> No new endpoints; four existing ones accept one more situation. See
+> *Run lifecycle* below. `BACKEND_CHANGES.md` is the plain-language brief
+> this revision implements.
+>
 > **Revision 3 — `integrity` is implemented.** The dimension set is now
 > **seven** keys, not six. `integrity` appears in `scores` on every completed
 > run from this revision onward. This is the one change in revision 3 that
@@ -26,8 +34,9 @@ Point the frontend at a real implementation of this contract by setting
 
 - Base path: `API_BASE` (default `/api`, overridable via `VITE_API_BASE_URL`).
 - All request/response bodies are `application/json` unless noted.
-- `status` is always exactly one of `"processing"`, `"completed"`, `"failed"`
-  — lowercase, no other values.
+- `status` is always exactly one of `"processing"`, `"awaiting_cdes"`,
+  `"completed"`, `"failed"` — lowercase, no other values. (`awaiting_cdes`
+  was added in revision 4; there were three before that.)
 - Dimension scores and `overall` are numbers on a **0–100** scale.
 - `progress` and rule `passRate` are **0–1** fractions, not percentages.
 - Dimension keys are a fixed set of seven: `completeness`, `validity`,
@@ -117,6 +126,48 @@ in the current `src/` does, so this should be a no-op for you. The accuracy
 score will move slightly on files containing postcodes, because two rules
 left that dimension.
 
+## Run lifecycle (revision 4)
+
+```
+upload ─▶ processing ─▶ awaiting_cdes ──PUT /cdes──▶ processing ─▶ completed
+          Ingesting,       (parked,                  Evaluating,
+          Profiling        waiting on a person)      Scoring
+```
+
+Any `processing` step can end in `failed` instead. A completed run can be
+sent back through `PUT /cdes` to re-score it against a different selection,
+exactly as in revision 2.
+
+**Stop polling at `awaiting_cdes`.** It is a resting state, not work in
+progress: nothing changes until the user acts, so a 3-second poll there
+only burns requests. Resume polling after `PUT /cdes` returns.
+
+**Progress only moves forward.** After confirmation the run reports
+`Evaluating` (stage 2) then `Scoring` (stage 3). It does not revisit
+`Ingesting` or `Profiling`: the second half resumes from the stored profile
+rather than reading the file from the top. A progress bar can therefore
+treat the two halves as one continuous 0–3 sequence split by the pause.
+
+**There is always at least one detected CDE** for a file with any populated
+column. Detection falls back to the strongest third of columns when none
+clear the threshold, so the confirm screen is never empty — though the user
+may still deselect down to one.
+
+### The four run states side by side
+
+`GET /runs/{id}` returns a different shape per status:
+
+| Status | Fields |
+| --- | --- |
+| `processing` | `id`, `file`, `status`, `stage`, `stageIndex`, `stageCount`, `progress` |
+| `awaiting_cdes` | `id`, `file`, `status`, `records`, `columns`, `cdes` |
+| `completed` | `id`, `file`, `status`, `overall`, `records`, `cdes`, `scores`, `columns`, `sampled`, `sampledRows`, `parseWarnings`, `cdeOverridden`, `notAssessed` |
+| `failed` | `id`, `file`, `status`, `error` |
+
+`awaiting_cdes` is the only shape with neither `scores` nor `overall`,
+because nothing has been evaluated. The three counts it does carry all come
+from Profiling, which is what lets the state exist before Evaluating runs.
+
 ## Endpoints
 
 ### `POST /runs`
@@ -196,6 +247,20 @@ Full detail for one run. Shape depends on `status`.
 
 `stage` is shown to the user verbatim. `stageIndex` is 0-based.
 
+**Awaiting CDEs** (revision 4):
+
+```json
+{
+  "id": "run_240118", "file": "customer_master_2024.csv",
+  "status": "awaiting_cdes",
+  "records": 128400, "columns": 34, "cdes": 18
+}
+```
+
+`columns` is the total column count; `cdes` is how many were auto-detected.
+Fetch `GET /runs/{id}/profile` for the per-column list and the reason each
+was or was not selected, which is what the confirm screen shows.
+
 > Backend note: the four stages are, in order, `Ingesting`, `Profiling`,
 > `Evaluating`, `Scoring`.
 
@@ -258,7 +323,7 @@ today.
 | `sampledRows` | Rows actually assessed when `sampled` is true, else `null`. `records` remains the true row count of the file. |
 | `notAssessed` | Map of dimension key to a human-readable reason. A dimension appearing here still appears in `scores` with a value of `null`. Suggested rendering: a greyed tile showing the reason rather than a zero. |
 | `parseWarnings` | Count of rows that could not be parsed cleanly and were excluded. Worth surfacing, because a client noticing it later is worse than us stating it. |
-| `cdeOverridden` | `true` when the CDE set was manually changed from the detected default (see below). |
+| `cdeOverridden` | `true` only when the confirmed CDE set differs from the detected default. Confirming the detected set as-is leaves it `false` (revision 4; see `PUT /runs/{id}/cdes`). |
 
 **Please note the `notAssessed` interaction.** A dimension that cannot be
 assessed will carry `null` in `scores`, not `0`. Scoring a file `0` for
@@ -270,6 +335,12 @@ omitted instead — but please don't display it as zero.
 
 Per-column profile and the reasoning behind each CDE decision. Not on any
 hot path — fetched only if the user opens a "columns" view.
+
+**Available from `awaiting_cdes` onward** (revision 4), not only once a run
+completes — the profile comes from Profiling, so it is complete before
+anything is scored. This is the data the confirm screen is built from.
+Returns `409` for a run still in its first `processing` phase, before
+Profiling has finished.
 
 ```json
 {
@@ -308,10 +379,24 @@ explainable, but it is still a heuristic and it will occasionally be wrong.
 
 ### [BACKEND PROPOSAL] `PUT /runs/{id}/cdes`
 
-Override the CDE set and re-evaluate. The source file is retained for the
-run's lifetime, so this re-runs the Evaluating and Scoring stages only; it
-does not re-parse or re-profile, and it typically completes in a fraction of
+Confirm or change the CDE set, then evaluate and score. Two starting
+states, one behaviour:
+
+- **From `awaiting_cdes`** (revision 4): this is what starts Evaluating and
+  Scoring for the first time. Every run passes through here once.
+- **From `completed`**: re-scores a finished run against a different
+  selection, as in revision 2.
+
+Either way it runs Evaluating and Scoring only. It does not re-parse or
+re-profile — the source file is retained for the run's lifetime and scoring
+resumes from the stored profile — so it typically finishes in a fraction of
 the original run time.
+
+> **Correction to revision 2.** Revision 2 made the same no-re-profiling
+> claim, but the implementation did in fact re-read and re-profile the whole
+> file, which showed as progress jumping back to `Ingesting`. It now does
+> what the contract said. If you worked around the backwards jump, the
+> workaround can go.
 
 - **Request:**
 
@@ -327,8 +412,16 @@ the original run time.
 { "id": "run_240118", "status": "processing" }
 ```
 
-- `400` if a named column does not exist in the file, naming the offender.
-- `409` if the run is not currently `completed`.
+- `400` if the list is empty, or if a named column does not exist in the
+  file, naming the offender. A rejected request starts nothing: the run stays
+  in whatever state it was in.
+- `409` if the run is neither `awaiting_cdes` nor `completed` — that is,
+  still processing or failed.
+
+**`cdeOverridden` means "changed", not "confirmed".** Every run now passes
+through this endpoint, so it cannot simply mean "this endpoint was called".
+It is `true` only when the confirmed set differs from what detection chose.
+Confirming the detected set unchanged leaves it `false`.
 
 **Suggested UI**, entirely at your discretion: a "Columns assessed: 18 of 34"
 link on the summary opening a panel with a checkbox per column, the detected
@@ -452,6 +545,9 @@ and irrelevant to the real backend.)
 - Return `204` with an empty body (`200` with a JSON body also works).
 - If the run is still `processing`, **cancel the underlying job** — the UI
   explicitly warns the user that deleting a processing run cancels it.
+- A run in `awaiting_cdes` is treated the same way (revision 4): it counts as
+  unfinished work, so it is cancelled and removed rather than handled as a
+  finished run.
 - Return `404` if the run doesn't exist.
 
 > Backend note: cancellation is checked between chunks, so a processing run
@@ -480,9 +576,15 @@ and irrelevant to the real backend.)
 | `GET /runs/{id}/profile` | New endpoint | Optional, new panel |
 | `PUT /runs/{id}/cdes` | New endpoint | Optional, checkbox panel plus existing poll |
 | `column`, `severity`, `evaluated`, `failed` per rule | Additive fields | Optional, display only |
+| `awaiting_cdes` status; run pauses after Profiling | **Behavioural, rev 4** | New screen between progress and results; stop polling while parked; `PUT /cdes` to continue |
+| `GET /profile` and `PUT /cdes` accept `awaiting_cdes` | **Behavioural, rev 4** | The confirm screen is built from these two |
+| `cdeOverridden` false when the detected set is confirmed unchanged | **Behavioural, rev 4** | None unless you inferred "overridden" from having called `PUT /cdes` |
+| `PUT /cdes` no longer re-profiles | **Correction, rev 4** | Progress no longer jumps back to `Ingesting`; drop any workaround |
 | `integrity` as a seventh dimension | **Implemented, rev 3** | One entry in `constants.js`, grid tolerates 7, tile copy must not claim cross-system checks |
 | `ACC-POSTCODE-COUNTRY` / `ACC-ZIP-STATE` renamed to `INT-*` | **Behavioural** | None unless rule ids are hard-coded; they are not in current `src/` |
 
-Two items require frontend work to avoid a wrong result: `notAssessed`,
-and the `integrity` tile — both because a dimension that could not be
-assessed must not be drawn as a zero. Everything else is optional.
+Three items require frontend work to avoid a wrong result: the
+`awaiting_cdes` screen, without which a new upload never reaches a score;
+`notAssessed`; and the `integrity` tile — the last two because a dimension
+that could not be assessed must not be drawn as a zero. Everything else is
+optional.
