@@ -1,0 +1,91 @@
+@import "tailwindcss";
+
+/* Design tokens from FRONTEND.md. In Tailwind v4 the @theme block is the
+   config: every entry becomes BOTH a CSS custom property (--color-accent)
+   and a utility class (bg-accent, text-accent, border-accent). */
+@theme {
+  --color-page: #f6f7f5;
+  --color-surface: #ffffff;
+  --color-border: #e2e4df;
+  --color-ink: #16181b;
+  --color-ink-2: #5b6169;
+  --color-ink-3: #8b9097;
+  --color-accent: #0e6e58;
+  --color-accent-hover: #0b5a47;
+  --color-healthy: #1f8a55;
+  --color-warn: #c08a1e;
+  --color-critical: #c23b3b;
+
+  --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --radius-control: 9px;
+  --radius-card: 14px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-page);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Visible focus ring everywhere, since we rely on keyboard nav for the drawer. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+@keyframes drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-drawer-in {
+  animation: drawer-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.animate-fade-in {
+  animation: fade-in 160ms ease-out;
+}
+.animate-toast-in {
+  animation: toast-in 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-drawer-in,
+  .animate-fade-in,
+  .animate-toast-in {
+    animation: none;
+  }
+}
