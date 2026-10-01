@@ -92,3 +92,12 @@ describe('column profile trigger', () => {
     expect(api.getRunProfile).toHaveBeenCalledWith('run_1');
   });
 });
+
+describe('data download', () => {
+  it('offers the assessed data as CSV beside the reports', () => {
+    renderView();
+    const link = screen.getByRole('link', { name: 'Download data (CSV)' });
+    expect(link).toHaveAttribute('href', expect.stringMatching(/\/runs\/run_1\/data$/));
+    expect(screen.getByText(/client.s own records/i)).toBeInTheDocument();
+  });
+});

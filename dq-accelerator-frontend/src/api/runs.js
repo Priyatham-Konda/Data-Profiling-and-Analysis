@@ -1,8 +1,8 @@
-import { fetchJson, fetchBlob, apiUrl } from './client';
+import { fetchJson, apiUrl, downloadFile } from './client';
 
 /**
- * The five endpoints from FRONTEND.md. This module is the only place an endpoint
- * string appears. Payload shapes (documented here since there are no types):
+ * The run endpoints. This module and api/salesforce.js (revision 5's
+ * connections and assessments) are the only places an endpoint string appears. Payload shapes (documented here since there are no types):
  *
  *   POST /runs                          -> { id, file, status: 'processing' }
  *   GET  /runs                          -> [{ id, file, status, overall? }]
@@ -46,6 +46,8 @@ import { fetchJson, fetchBlob, apiUrl } from './client';
  *                                        -> { ruleId, ruleName, passRate, total,
  *                                             examples: [{ row, column, value, reason }] }
  *   GET  /runs/{id}/report?type=...     -> PDF, Content-Disposition: attachment
+ *   GET  /runs/{id}/data                -> CSV of every field and record the run
+ *             was assessed on (409 until profiling has finished)
  *   DELETE /runs/{id}                   -> 204
  */
 
@@ -117,17 +119,19 @@ export function reportUrl(id, type) {
 // fall through to Vite's dev server and download its index.html shell
 // instead of the mocked report. A real fetch() is what MSW actually
 // documents intercepting, so this forces the download through one.
-export async function downloadReport(id, type) {
-  const path = `/runs/${encodeURIComponent(id)}/report?type=${encodeURIComponent(type)}`;
-  const { blob, filename } = await fetchBlob(path);
+export function downloadReport(id, type) {
+  return downloadFile(
+    `/runs/${encodeURIComponent(id)}/report?type=${encodeURIComponent(type)}`,
+    `report-${type}.pdf`,
+  );
+}
 
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename || `report-${type}.pdf`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  // Give the browser a moment to pick up the blob before freeing it.
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+// Revision 5 addendum: GET /runs/{id}/data, the data the run was assessed
+// on as CSV. Same link-in-production, fetch-in-dev split as the report.
+export function runDataUrl(id) {
+  return apiUrl(`/runs/${encodeURIComponent(id)}/data`);
+}
+
+export function downloadRunData(id) {
+  return downloadFile(`/runs/${encodeURIComponent(id)}/data`, 'data.csv');
 }

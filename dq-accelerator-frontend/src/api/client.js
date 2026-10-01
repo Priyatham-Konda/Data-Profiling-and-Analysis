@@ -6,16 +6,25 @@ export function apiUrl(path) {
   return `${API_BASE}${path}`;
 }
 
+// The thrown Error carries `status` and, when the backend sends one, `code`
+// (the `errorCode` field) -- revision 5's connect dialog branches on it to
+// point the user at the right field. The message is still the user-facing
+// `error` string, so every existing catch-and-toast keeps working unchanged.
 async function throwIfError(res) {
   if (res.ok) return;
   let detail;
+  let code;
   try {
     const body = await res.json();
     detail = body?.error ?? body?.detail;
+    code = body?.errorCode;
   } catch {
     detail = res.statusText;
   }
-  throw new Error(detail || `Request failed (${res.status})`);
+  const error = new Error(detail || `Request failed (${res.status})`);
+  error.status = res.status;
+  error.code = code;
+  throw error;
 }
 
 export async function fetchJson(path, options) {
@@ -39,4 +48,21 @@ export async function fetchBlob(path) {
   const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1];
 
   return { blob: await res.blob(), filename };
+}
+
+// Dev-only download path shared by run and assessment reports: a real fetch()
+// (which MSW does intercept) turned into a blob and saved through a temporary
+// link. See DownloadMenu for why production uses a plain <a download> instead.
+export async function downloadFile(path, fallbackName) {
+  const { blob, filename } = await fetchBlob(path);
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename || fallbackName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // Give the browser a moment to pick up the blob before freeing it.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

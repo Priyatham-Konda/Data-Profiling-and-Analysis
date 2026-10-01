@@ -4,6 +4,8 @@ import { Toast, ToastProvider } from '@/components/Toast';
 import { RunsProvider } from '@/components/RunsProvider';
 import { HomePanel } from '@/pages/HomePanel';
 import { UploadPanel } from '@/pages/UploadPanel';
+import { SalesforcePanel } from '@/pages/SalesforcePanel';
+import { DashboardPanel } from '@/pages/DashboardPanel';
 
 export default function App() {
   return (
@@ -16,6 +18,8 @@ export default function App() {
             <Route element={<AppShell />}>
               <Route path="/" element={<HomePanel />} />
               <Route path="/upload" element={<UploadPanel />} />
+              <Route path="/salesforce" element={<SalesforcePanel />} />
+              <Route path="/dashboard" element={<DashboardPanel />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>

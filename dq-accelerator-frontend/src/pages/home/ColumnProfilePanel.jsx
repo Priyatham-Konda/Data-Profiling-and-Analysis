@@ -21,7 +21,7 @@ const FOCUSABLE = 'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1
  * document underneath.
  */
 export function ColumnProfilePanel({ runId, onClose, onReassessed }) {
-  const { refreshRuns } = useContext(RunsContext);
+  const { refreshRuns, refreshAssessments } = useContext(RunsContext);
   const { showToast } = useContext(ToastContext);
 
   const [data, setData] = useState(null);
@@ -111,6 +111,8 @@ export function ColumnProfilePanel({ runId, onClose, onReassessed }) {
       // sidebar's own list (refreshRuns) and this run's own detail poll
       // (onReassessed, an immediate refetch rather than waiting on its timer).
       refreshRuns();
+      // An object run re-scored here moves its Salesforce assessment too.
+      refreshAssessments();
       onReassessed?.();
       onClose();
     } catch (err) {

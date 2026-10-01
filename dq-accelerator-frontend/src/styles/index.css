@@ -3,18 +3,24 @@
 /* Design tokens from FRONTEND.md. In Tailwind v4 the @theme block is the
    config: every entry becomes BOTH a CSS custom property (--color-accent)
    and a utility class (bg-accent, text-accent, border-accent). */
+/* dataskate brand: black and red (#ED1C24 in the logo). The accent is the
+   logo red taken a shade deeper, so white text on it and red text on white
+   both stay readable (AA contrast). Neutrals are pure greys to sit with the
+   logo's black. The critical band is a darker crimson rather than the brand
+   red, so a primary button never reads as a failing score. */
 @theme {
-  --color-page: #f6f7f5;
+  --color-page: #f7f7f7;
   --color-surface: #ffffff;
-  --color-border: #e2e4df;
-  --color-ink: #16181b;
-  --color-ink-2: #5b6169;
-  --color-ink-3: #8b9097;
-  --color-accent: #0e6e58;
-  --color-accent-hover: #0b5a47;
+  --color-border: #e5e5e5;
+  --color-ink: #111111;
+  --color-ink-2: #555555;
+  --color-ink-3: #8a8a8a;
+  --color-accent: #d6121a;
+  --color-accent-hover: #b30f16;
+  --color-brand-red: #ed1c24;
   --color-healthy: #1f8a55;
   --color-warn: #c08a1e;
-  --color-critical: #c23b3b;
+  --color-critical: #9f1239;
 
   --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;

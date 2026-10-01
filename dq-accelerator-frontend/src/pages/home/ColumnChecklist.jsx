@@ -1,11 +1,41 @@
 import { formatPercent } from '@/lib/format';
 
+// Revision 5: a Salesforce object's columns carry a `salesforce` block. Its
+// label goes first (Total_Amount_Debt__c means little; "Total Amount of Debt"
+// means something), with the API name beside it, plus badges for required
+// fields and for reference fields' targets.
+function ColumnName({ column }) {
+  const meta = column.salesforce;
+  if (!meta) return <span className="font-mono text-ink">{column.name}</span>;
+
+  return (
+    <div>
+      <p className="text-ink">{meta.label}</p>
+      <p className="mt-0.5 font-mono text-[11px] text-ink-3">{column.name}</p>
+      {(meta.required || meta.referenceTo?.length > 0) && (
+        <div className="mt-1 flex flex-wrap gap-1">
+          {meta.required && (
+            <span className="rounded-full bg-ink/6 px-1.5 py-0.5 text-[10px] font-semibold text-ink-2">
+              Required
+            </span>
+          )}
+          {meta.referenceTo?.length > 0 && (
+            <span className="rounded-full bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold text-accent">
+              &rarr; {meta.referenceTo.join(', ')}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * The per-column table shared by ColumnProfilePanel (an optional re-review
- * after a run has completed) and AwaitingCdesView (the required first
- * confirmation out of awaiting_cdes). Purely presentational -- both callers
- * own the fetch and the selection state themselves, and differ only in their
- * outer chrome and the wording of their confirm action.
+ * after a run has completed), AwaitingCdesView (the required first
+ * confirmation out of awaiting_cdes), and each tab of a Salesforce
+ * assessment's confirm screen. Purely presentational -- callers own the fetch
+ * and the selection state, and differ only in their chrome and confirm action.
  */
 export function ColumnChecklist({ columns, selected, onToggle }) {
   return (
@@ -56,8 +86,12 @@ export function ColumnChecklist({ columns, selected, onToggle }) {
                   )}
                 </label>
               </td>
-              <td className="py-3 pr-6 font-mono text-ink">{column.name}</td>
-              <td className="py-3 pr-6 text-ink-2">{column.inferredType}</td>
+              <td className="py-3 pr-6">
+                <ColumnName column={column} />
+              </td>
+              <td className="py-3 pr-6 text-ink-2">
+                {column.salesforce?.type ?? column.inferredType}
+              </td>
               <td className="py-3 pr-6 font-mono text-ink-2">{formatPercent(column.fillRate)}</td>
               <td className="py-3 pr-6 font-mono text-ink-2">
                 {formatPercent(column.distinctRatio)}

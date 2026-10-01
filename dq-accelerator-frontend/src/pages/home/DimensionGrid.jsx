@@ -5,7 +5,7 @@ import { formatScore } from '@/lib/format';
 // DimensionTile is only ever rendered by DimensionGrid, so it stays private
 // to this file rather than having its own.
 
-function DimensionTile({ label, score, reason, onOpen }) {
+function DimensionTile({ label, score, reason, onOpen, interactive }) {
   // null/undefined score means the engine couldn't evaluate this dimension on
   // this file (e.g. timeliness with no date column) -- shown as a reason, not
   // as a fake 0 score with a critical-red bar.
@@ -21,13 +21,20 @@ function DimensionTile({ label, score, reason, onOpen }) {
     }
   }
 
+  // A read-only tile (a revision-5 assessment's overall grid, which has no
+  // dimension drawer of its own) is a plain block, not a button that does
+  // nothing when pressed.
+  const Tag = interactive ? 'button' : 'div';
+  const interactionProps = interactive
+    ? { type: 'button', onDoubleClick: onOpen, onKeyDown: handleKeyDown, title: 'Double-click for rule detail' }
+    : {};
+
   return (
-    <button
-      type="button"
-      onDoubleClick={onOpen}
-      onKeyDown={handleKeyDown}
-      title="Double-click for rule detail"
-      className="rounded-[var(--radius-card)] border border-border bg-surface p-5 text-left transition select-none hover:border-accent/40 hover:shadow-sm"
+    <Tag
+      {...interactionProps}
+      className={`rounded-[var(--radius-card)] border border-border bg-surface p-5 text-left transition select-none ${
+        interactive ? 'hover:border-accent/40 hover:shadow-sm' : ''
+      }`}
     >
       <div className="flex items-start justify-between gap-3">
         <span className="text-sm font-semibold text-ink">{label}</span>
@@ -55,16 +62,16 @@ function DimensionTile({ label, score, reason, onOpen }) {
           </div>
         </>
       )}
-    </button>
+    </Tag>
   );
 }
 
-export function DimensionGrid({ scores, notAssessed = {}, onOpenDimension }) {
+export function DimensionGrid({ scores, notAssessed = {}, onOpenDimension, interactive = true }) {
   return (
     <section className="mt-7">
       <div className="flex items-baseline justify-between">
         <h2 className="text-sm font-semibold text-ink">Dimensions</h2>
-        <p className="text-xs text-ink-3">Double-click a tile for rule detail</p>
+        {interactive && <p className="text-xs text-ink-3">Double-click a tile for rule detail</p>}
       </div>
 
       <div className="mt-3 grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4">
@@ -74,7 +81,8 @@ export function DimensionGrid({ scores, notAssessed = {}, onOpenDimension }) {
             label={dimension.label}
             score={scores[dimension.key]}
             reason={notAssessed[dimension.key]}
-            onOpen={() => onOpenDimension(dimension.key)}
+            onOpen={() => onOpenDimension?.(dimension.key)}
+            interactive={interactive}
           />
         ))}
       </div>

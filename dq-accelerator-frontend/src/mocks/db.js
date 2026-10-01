@@ -189,6 +189,7 @@ function resolve(run) {
   if (run.willFail) {
     run.status = STATUS.FAILED;
     run.error =
+      run.failReason ??
       'Profiling stopped: 3 of 18 candidate CDEs had no non-null values, so no baseline could be established.';
     return run;
   }
@@ -209,8 +210,40 @@ function ensureScores(run) {
   return run;
 }
 
-export function allRuns() {
-  return runs.map(resolve).map(ensureScores);
+// GET /runs lists standalone runs only (revision 5): object runs of an
+// assessment are listed through GET /assessments instead, so the sidebar
+// doesn't fill with one entry per Salesforce object.
+export function allRuns({ includeObjectRuns = false } = {}) {
+  return runs
+    .map(resolve)
+    .map(ensureScores)
+    .filter((run) => includeObjectRuns || !run.assessmentId);
+}
+
+// One run per selected Salesforce object. It follows exactly the same
+// lifecycle as an uploaded file -- the download is just its Ingesting stage.
+export function createObjectRun({ assessmentId, orgName, object, label, recordCount, failReason }) {
+  const records = recordCount ?? 1000 + Math.floor(Math.random() * 6000);
+  const run = {
+    id: nextId(),
+    file: `${orgName} · ${label}`,
+    assessmentId,
+    source: { type: 'salesforce', orgName, object, label },
+    sourceRecordCount: records,
+    willFail: Boolean(failReason),
+    failReason,
+    notAssessedDimensions: [],
+    status: STATUS.PROCESSING,
+    createdAt: new Date().toISOString(),
+    startedAt: Date.now(),
+    records,
+    sampled: false,
+    sampledRows: null,
+    cdes: 5 + Math.floor(Math.random() * 8),
+    cdeOverridden: false,
+  };
+  runs.unshift(run);
+  return run;
 }
 
 export function findRun(id) {
@@ -235,26 +268,46 @@ export function summaryOf(run) {
   };
 }
 
+// Revision 5: downloading from Salesforce is reported as the Ingesting stage,
+// with a stageDetail saying what is actually happening.
+function downloadDetail(run, fraction) {
+  if (fraction < 0.2) return 'Waiting for Salesforce to prepare the export';
+  const total = run.sourceRecordCount ?? run.records;
+  const done = Math.min(total, Math.round(((fraction - 0.2) / 0.8) * total));
+  return `Downloading from Salesforce: ${done.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} records`;
+}
+
 export function detailOf(run) {
   const base = {
     id: run.id,
     file: run.file,
     status: run.status,
     createdAt: run.createdAt,
+    // Object runs of an assessment carry both in every status; upload runs
+    // carry neither, so their shapes stay exactly as in revision 4.
+    ...(run.assessmentId ? { assessmentId: run.assessmentId, source: run.source } : {}),
   };
 
   if (run.status === STATUS.PROCESSING) {
     const stages = stagesFor(run);
     const totalMs = totalMsFor(run);
     const elapsed = Math.min(Date.now() - run.startedAt, totalMs - 1);
-    const index = Math.floor(elapsed / STAGE_MS);
-    return {
+    const local = Math.floor(elapsed / STAGE_MS);
+    // One continuous 0-3 sequence across both halves (API_CONTRACT.md
+    // revision 4 correction): after confirmation the run reports Evaluating
+    // as stage 2 and Scoring as stage 3 of 4, never jumping back to 0.
+    const offset = run.processingKind === 'scoring' ? PROFILE_STAGES.length : 0;
+    const detail = {
       ...base,
-      stage: stages[index],
-      stageIndex: index,
-      stageCount: stages.length,
-      progress: Math.min(0.99, elapsed / totalMs),
+      stage: stages[local],
+      stageIndex: offset + local,
+      stageCount: STAGES.length,
+      progress: Math.min(0.99, (offset * STAGE_MS + elapsed) / (STAGES.length * STAGE_MS)),
     };
+    if (run.source && stages[local] === 'Ingesting') {
+      detail.stageDetail = downloadDetail(run, (elapsed % STAGE_MS) / STAGE_MS);
+    }
+    return detail;
   }
 
   if (run.status === STATUS.FAILED) {
@@ -369,22 +422,64 @@ function sampleFor(semanticType, rand, index) {
 // per-column rng below so detailOf can call this alone without generating an
 // entire profile just to read a count, while still landing on the exact same
 // number runProfile would.
+// Salesforce object runs get Salesforce-looking fields, each with the
+// revision-5 `salesforce` metadata block. Same ordering principle as
+// COLUMN_POOL: business fields first, system/audit fields last.
+const sf = (label, type, extra = {}) => ({
+  label,
+  type,
+  custom: false,
+  required: false,
+  referenceTo: null,
+  picklistValues: null,
+  length: null,
+  ...extra,
+});
+
+const SF_FIELD_POOL = [
+  { name: 'Name', inferredType: 'string', semanticType: 'name', salesforce: sf('Name', 'string', { required: true, length: 255 }) },
+  { name: 'Phone', inferredType: 'string', semanticType: 'phone', salesforce: sf('Phone', 'phone', { length: 40 }) },
+  { name: 'Email', inferredType: 'string', semanticType: 'email', salesforce: sf('Email', 'email', { length: 80 }) },
+  { name: 'BillingCity', inferredType: 'string', semanticType: 'address', salesforce: sf('Billing City', 'string', { length: 40 }) },
+  { name: 'BillingPostalCode', inferredType: 'string', semanticType: 'address', salesforce: sf('Billing Zip/Postal Code', 'string', { length: 20 }) },
+  { name: 'AccountId', inferredType: 'string', semanticType: 'identifier', salesforce: sf('Account ID', 'reference', { referenceTo: ['Account'], length: 18 }) },
+  { name: 'Industry', inferredType: 'string', semanticType: 'reference', salesforce: sf('Industry', 'picklist', { picklistValues: ['Banking', 'Energy', 'Healthcare', 'Retail'] }) },
+  { name: 'Status__c', inferredType: 'string', semanticType: 'reference', salesforce: sf('Status', 'picklist', { custom: true, required: true, picklistValues: ['Open', 'Active', 'Closed'] }) },
+  { name: 'Amount', inferredType: 'number', semanticType: 'amount', salesforce: sf('Amount', 'currency') },
+  { name: 'CloseDate', inferredType: 'date', semanticType: 'date', salesforce: sf('Close Date', 'date') },
+  { name: 'Total_Amount_Debt__c', inferredType: 'number', semanticType: 'amount', salesforce: sf('Total Amount of Debt', 'currency', { custom: true }) },
+  { name: 'LeadSource', inferredType: 'string', semanticType: 'reference', salesforce: sf('Lead Source', 'picklist', { picklistValues: ['Web', 'Referral', 'Partner'] }) },
+  { name: 'AnnualRevenue', inferredType: 'number', semanticType: 'amount', salesforce: sf('Annual Revenue', 'currency') },
+  { name: 'OwnerId', inferredType: 'string', semanticType: 'identifier', salesforce: sf('Owner ID', 'reference', { required: true, referenceTo: ['User'], length: 18 }) },
+  { name: 'CreatedDate', inferredType: 'date', semanticType: 'metadata', salesforce: sf('Created Date', 'datetime', { required: true }) },
+  { name: 'LastModifiedDate', inferredType: 'date', semanticType: 'metadata', salesforce: sf('Last Modified Date', 'datetime', { required: true }) },
+  { name: 'CreatedById', inferredType: 'string', semanticType: 'metadata', salesforce: sf('Created By ID', 'reference', { required: true, referenceTo: ['User'], length: 18 }) },
+  { name: 'SystemModstamp', inferredType: 'date', semanticType: 'metadata', salesforce: sf('System Modstamp', 'datetime', { required: true }) },
+  { name: 'Description', inferredType: 'string', semanticType: 'free_text', salesforce: sf('Description', 'textarea', { length: 32000 }) },
+];
+
+function poolFor(run) {
+  return run.source?.type === 'salesforce' ? SF_FIELD_POOL : COLUMN_POOL;
+}
+
 function totalColumnsFor(run) {
+  const pool = poolFor(run);
   const rand = rng(hash(`${run.id}:profile`));
-  const cdeCount = Math.min(run.cdes, COLUMN_POOL.length);
+  const cdeCount = Math.min(run.cdes, pool.length);
   const extra = 4 + Math.floor(rand() * 8);
-  return Math.min(COLUMN_POOL.length, cdeCount + extra);
+  return Math.min(pool.length, cdeCount + extra);
 }
 
 // Per-column profile backing GET /runs/{id}/profile. `run.cdes` columns are
 // marked isCde in pool order; a handful more are appended as the "rest of the
 // file" so the panel has something non-trivial to show alongside them.
 export function runProfile(run) {
+  const pool = poolFor(run);
   const totalColumns = totalColumnsFor(run);
-  const cdeCount = Math.min(run.cdes, COLUMN_POOL.length);
+  const cdeCount = Math.min(run.cdes, pool.length);
   const rand = rng(hash(`${run.id}:profile:columns`));
 
-  const columns = COLUMN_POOL.slice(0, totalColumns).map((column, i) => {
+  const columns = pool.slice(0, totalColumns).map((column, i) => {
     const isCde = i < cdeCount;
     const fillRate = isCde ? 0.9 + rand() * 0.099 : 0.35 + rand() * 0.6;
     const distinctRatio = isCde ? 0.85 + rand() * 0.15 : rand() * 0.35;
@@ -401,6 +496,7 @@ export function runProfile(run) {
       cdeReason: isCde
         ? CDE_REASONS[i % CDE_REASONS.length]
         : NON_CDE_REASONS[i % NON_CDE_REASONS.length],
+      ...(column.salesforce ? { salesforce: column.salesforce } : {}),
     };
   });
 
@@ -478,12 +574,22 @@ export function validateProfileAccess(run) {
   return null;
 }
 
-export function validateCdeOverride(run, columns) {
+export function validateCdeOverride(run, columns, { viaAssessment = false } = {}) {
   // Valid from awaiting_cdes (the first, required confirmation) or from
   // completed (an optional later re-review) -- anything else (still
   // profiling, failed) has no CDE set to confirm yet or ever.
   if (![STATUS.AWAITING_CDES, STATUS.COMPLETED].includes(run.status)) {
     return { status: 409, error: 'This run is not awaiting CDE confirmation or completed.' };
+  }
+
+  // Revision 5: the object runs of an assessment are confirmed together
+  // through PUT /assessments/{id}/cdes; only a completed one can be
+  // re-scored on its own.
+  if (run.assessmentId && run.status === STATUS.AWAITING_CDES && !viaAssessment) {
+    return {
+      status: 409,
+      error: 'This object belongs to a Salesforce assessment. Confirm its columns together with the other objects.',
+    };
   }
 
   if (!Array.isArray(columns) || columns.length === 0) {
@@ -718,4 +824,53 @@ export function ruleExamples(run, key, ruleId, limit = MAX_RULE_EXAMPLES) {
   }));
 
   return { ruleId, ruleName: rule.name, passRate: rule.passRate, total, examples };
+}
+
+// ---------------------------------------------------------------------------
+// Revision 5 addendum: GET /runs/{id}/data -- the data the run was assessed on
+// ---------------------------------------------------------------------------
+
+// Available once profiling has finished: awaiting_cdes, completed, and a
+// completed run that is being re-scored (its data is already on hand).
+export function validateDataAccess(run) {
+  const reScoring = run.status === STATUS.PROCESSING && run.processingKind === 'scoring';
+  if (![STATUS.AWAITING_CDES, STATUS.COMPLETED].includes(run.status) && !reScoring) {
+    return { status: 409, error: 'The data is not available until profiling has finished.' };
+  }
+  return null;
+}
+
+function csvCell(value) {
+  const text = String(value ?? '');
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+// Deterministic stand-in rows: every column of the run (not only the CDEs),
+// Salesforce objects with Id first and a byte-order mark for Excel. The mock
+// caps the row count; the real endpoint returns every record.
+export function runDataCsv(run, { maxRows = 200 } = {}) {
+  const pool = poolFor(run).slice(0, totalColumnsFor(run));
+  const isSalesforce = run.source?.type === 'salesforce';
+  const names = pool.map((column) => column.name).filter((name) => name !== 'Id');
+  const header = isSalesforce ? ['Id', ...names] : names;
+  const rand = rng(hash(`${run.id}:data`));
+  const rowCount = Math.min(run.records ?? maxRows, maxRows);
+
+  const lines = [header.map(csvCell).join(',')];
+  for (let row = 0; row < rowCount; row += 1) {
+    const cells = pool
+      .filter((column) => column.name !== 'Id')
+      .map((column) => (rand() < 0.06 ? '' : sampleFor(column.semanticType, rand, row)));
+    if (isSalesforce) cells.unshift(`001${(row + 100000).toString(36).toUpperCase().padStart(15, '0')}`);
+    lines.push(cells.map(csvCell).join(','));
+  }
+  return `${isSalesforce ? '﻿' : ''}${lines.join('\r\n')}\r\n`;
+}
+
+// "Acme Corporation · Account" -> "Acme_Corporation_Account.csv"
+export function runDataFilename(run) {
+  const base = run.source?.type === 'salesforce'
+    ? `${run.source.orgName}_${run.source.object}`
+    : run.file.replace(/\.(csv|tsv|txt)$/i, '');
+  return `${base.replace(/[^\w-]+/g, '_')}.csv`;
 }

@@ -1,7 +1,7 @@
 import { useContext, useState } from 'react';
 import { bandPill, bandText, bandLabel } from '@/lib/band';
 import { formatCount, formatScore } from '@/lib/format';
-import { downloadReport, reportUrl } from '@/api/runs';
+import { downloadReport, downloadRunData, reportUrl, runDataUrl } from '@/api/runs';
 import { ToastContext } from '@/components/Toast';
 import { DimensionGrid } from './DimensionGrid';
 import { ColumnProfilePanel } from './ColumnProfilePanel';
@@ -81,7 +81,11 @@ function ScoreHeader({ run, onViewProfile, children }) {
 // requests made by clicking an <a download>, so left alone those clicks fall
 // through to Vite's dev server and download its index.html shell instead of
 // the mocked report. This branch never runs against the real backend.
-function DownloadMenu({ runId }) {
+// Shared by a run's summary and a revision-5 assessment's results:
+// hrefFor(type) is the real report URL, download(type) the dev-only fetch.
+// `data` ({ href, download, label }) adds the assessed-data download beneath
+// the reports -- the CSV for a run, the ZIP for an assessment.
+export function DownloadMenu({ hrefFor, download, data }) {
   const { showToast } = useContext(ToastContext);
   const [pendingType, setPendingType] = useState(null);
 
@@ -91,7 +95,7 @@ function DownloadMenu({ runId }) {
 
     setPendingType(type);
     try {
-      await downloadReport(runId, type);
+      await (type === 'data' ? data.download() : download(type));
     } catch (error) {
       showToast(`Could not download the report. ${error.message}`, 'error');
     } finally {
@@ -105,7 +109,7 @@ function DownloadMenu({ runId }) {
   return (
     <div className="flex flex-col gap-2">
       <a
-        href={reportUrl(runId, 'summary')}
+        href={hrefFor('summary')}
         download
         aria-disabled={pendingType === 'summary'}
         onClick={(event) => handleClick('summary', event)}
@@ -114,7 +118,7 @@ function DownloadMenu({ runId }) {
         {pendingType === 'summary' ? 'Downloading…' : 'Download summary'}
       </a>
       <a
-        href={reportUrl(runId, 'in-depth')}
+        href={hrefFor('in-depth')}
         download
         aria-disabled={pendingType === 'in-depth'}
         onClick={(event) => handleClick('in-depth', event)}
@@ -122,6 +126,24 @@ function DownloadMenu({ runId }) {
       >
         {pendingType === 'in-depth' ? 'Downloading…' : 'In-depth report'}
       </a>
+      {data && (
+        <>
+          <a
+            href={data.href}
+            download
+            aria-disabled={pendingType === 'data'}
+            onClick={(event) => handleClick('data', event)}
+            className={`${base} border border-border bg-surface text-ink-2 hover:bg-ink/4`}
+          >
+            {pendingType === 'data' ? 'Downloading…' : data.label}
+          </a>
+          {/* The contract asks for this: the file holds the client's own
+              records, often personal data, exactly as stored. */}
+          <p className="max-w-44 text-[11px] leading-snug text-ink-3">
+            The client&rsquo;s own records, exactly as assessed. Handle it as their data.
+          </p>
+        </>
+      )}
     </div>
   );
 }
@@ -132,7 +154,15 @@ export function CompletedView({ run, onOpenDimension, onReassessed }) {
   return (
     <div className="px-10 py-9">
       <ScoreHeader run={run} onViewProfile={() => setIsProfileOpen(true)}>
-        <DownloadMenu runId={run.id} />
+        <DownloadMenu
+          hrefFor={(type) => reportUrl(run.id, type)}
+          download={(type) => downloadReport(run.id, type)}
+          data={{
+            href: runDataUrl(run.id),
+            download: () => downloadRunData(run.id),
+            label: 'Download data (CSV)',
+          }}
+        />
       </ScoreHeader>
 
       {run.sampled && (

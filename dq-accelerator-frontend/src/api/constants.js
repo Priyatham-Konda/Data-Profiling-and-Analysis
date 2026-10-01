@@ -34,6 +34,17 @@ export const DIMENSIONS = Object.freeze([
 
 export const DIMENSION_KEYS = Object.freeze(DIMENSIONS.map((d) => d.key));
 
+// Revision 5. A Salesforce connection has its own `state`, deliberately not
+// `status` -- "closed" with closedReason "extracted" is the normal end of a
+// successful connection, not a failure, so it must never be drawn with a
+// run's status badge.
+export const CONNECTION_STATE = Object.freeze({
+  CONNECTED: 'connected',
+  CLOSED: 'closed',
+});
+
+export const MAX_ASSESSMENT_OBJECTS = 25;
+
 export function dimensionLabel(key) {
   return DIMENSIONS.find((d) => d.key === key)?.label ?? key;
 }

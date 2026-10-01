@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, PDFName } from 'pdf-lib';
 import { buildReportPdf } from './report';
 import { applyCdeOverride, createRun, findRun, runProfile } from './db';
 
@@ -59,5 +59,12 @@ describe('buildReportPdf with a not-assessed dimension', () => {
     // scored run -- the not-assessed dimension still gets a page, just with
     // a reason instead of a rules table.
     expect(parsed.getPageCount()).toBe(1 + Object.keys(run.scores).length);
+  });
+
+  it('puts the dataskate logo in the page header', async () => {
+    const run = completedRun('branded-report.csv');
+    const pdf = await PDFDocument.load(await buildReportPdf(run, 'summary'));
+    const xObjects = pdf.getPages()[0].node.Resources().lookup(PDFName.of('XObject'));
+    expect(xObjects?.keys().length).toBeGreaterThan(0);
   });
 });

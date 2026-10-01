@@ -353,14 +353,19 @@ describe('CDE confirmation and override (PUT /runs/{id}/cdes)', () => {
     vi.useFakeTimers();
     applyCdeOverride(run, newColumns);
 
+    // One continuous 0-3 sequence (revision 4 correction): Evaluating is
+    // stage 2 of 4 and Scoring stage 3 -- progress never jumps back.
     let detail = detailOf(findRun(run.id));
     expect(detail.status).toBe(STATUS.PROCESSING);
     expect(detail.stage).toBe('Evaluating');
-    expect(detail.stageCount).toBe(2);
+    expect(detail.stageIndex).toBe(2);
+    expect(detail.stageCount).toBe(4);
+    expect(detail.progress).toBeGreaterThanOrEqual(0.5);
 
     vi.advanceTimersByTime(3000);
     detail = detailOf(findRun(run.id));
     expect(detail.stage).toBe('Scoring');
+    expect(detail.stageIndex).toBe(3);
 
     vi.advanceTimersByTime(3000 + 1);
     detail = detailOf(findRun(run.id));

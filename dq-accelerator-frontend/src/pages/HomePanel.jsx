@@ -6,6 +6,7 @@ import { formatPercent } from '@/lib/format';
 import { CompletedView } from './home/CompletedView';
 import { AwaitingCdesView } from './home/AwaitingCdesView';
 import { DimensionDrawer } from './home/DimensionDrawer';
+import { AssessmentPanel } from './AssessmentPanel';
 
 // The four small "nothing selected / processing / failed" states live here,
 // next to the switch that picks between them (MainState, below). Only
@@ -36,6 +37,8 @@ function ProcessingView({ run }) {
         {run.stage}
         <span className="text-ink-3">&hellip;</span>
       </h1>
+      {/* Revision 5: e.g. "Downloading from Salesforce: 3,200 of 5,790 records". */}
+      {run.stageDetail && <p className="mt-1 text-sm text-ink-2">{run.stageDetail}</p>}
 
       <div className="mt-6">
         <div
@@ -95,6 +98,7 @@ function FailedView({ run }) {
 export function HomePanel() {
   const [searchParams] = useSearchParams();
   const selectedRunId = searchParams.get('run');
+  const selectedAssessmentId = searchParams.get('assessment');
 
   // Drawer state is local UI state, not navigation -- closing it just returns to
   // whatever Home state was showing underneath.
@@ -174,8 +178,24 @@ export function HomePanel() {
     return () => clearInterval(timer);
   }, [selectedRunId, run?.status]);
 
+  // Revision 5: a Salesforce assessment is selected instead of a run. The
+  // hooks above still run (with no run id they are no-ops), so hook order
+  // stays stable whichever of the two is selected.
+  if (selectedAssessmentId && !selectedRunId) {
+    return <AssessmentPanel assessmentId={selectedAssessmentId} />;
+  }
+
   return (
     <>
+      {run?.assessmentId && (
+        <Link
+          to={`/?assessment=${encodeURIComponent(run.assessmentId)}`}
+          className="mx-10 mt-6 inline-flex items-center gap-1.5 text-sm font-semibold text-accent transition hover:text-accent-hover"
+        >
+          <span aria-hidden="true">&larr;</span>
+          Back to {run.source?.orgName ?? 'the'} assessment
+        </Link>
+      )}
       <MainState
         selectedRunId={selectedRunId}
         run={run}
