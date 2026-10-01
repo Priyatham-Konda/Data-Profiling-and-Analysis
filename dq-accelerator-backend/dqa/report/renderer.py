@@ -6,6 +6,7 @@ Python, BSD licensed, and no 150 MB Chromium in the image.
 """
 from __future__ import annotations
 
+import base64
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,7 @@ from ..store import artifacts, registry
 
 log = logging.getLogger("dqa.report")
 TEMPLATE_DIR = Path(__file__).parent / "templates"
+LOGO_PATH = TEMPLATE_DIR / "dataskate-logo.png"
 
 DIMENSION_BLURB = {
     "completeness": "Whether values are present in the fields that matter.",
@@ -43,11 +45,19 @@ DIMENSION_IMPACT = {
 }
 
 
+def _logo_src() -> str:
+    # Inlined rather than referenced by path so the logo also survives in the
+    # HTML fallback, which is written beside the report, away from TEMPLATE_DIR.
+    return "data:image/png;base64," + base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+
+
 def _env() -> Environment:
-    return Environment(
+    env = Environment(
         loader=FileSystemLoader(str(TEMPLATE_DIR)),
         autoescape=select_autoescape(["html"]),
     )
+    env.globals["logo_src"] = _logo_src()
+    return env
 
 
 def build_context(run_id: str, report_type: str) -> dict[str, Any]:
