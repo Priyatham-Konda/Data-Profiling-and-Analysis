@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Data Quality Assessment — {{ name }}</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 20mm 16mm;
+    @bottom-center { content: "Data Quality Assessment · " counter(page) " of " counter(pages);
+      font-family: Helvetica, Arial, sans-serif; font-size: 8pt; color: #7A858E; } }
+  body { font-family: Helvetica, Arial, sans-serif; color: #24303A; font-size: 10pt; line-height: 1.45; }
+  h1 { font-size: 22pt; margin: 0 0 4pt; }
+  h2 { font-size: 13pt; margin: 22pt 0 6pt; padding-bottom: 4pt; border-bottom: 1px solid #D8DEE4; }
+  h3 { font-size: 11pt; margin: 14pt 0 4pt; }
+  .sub { color: #5A6572; font-size: 10pt; margin: 0 0 18pt; }
+  .cover { border-left: 4px solid #3D6B54; padding-left: 14pt; margin-bottom: 20pt; }
+  .kpis { display: table; width: 100%; margin: 14pt 0; border-spacing: 6pt 0; }
+  .kpi { display: table-cell; width: 25%; background: #F4F6F8; padding: 10pt; border-radius: 4pt; }
+  .kpi .v { font-size: 17pt; font-weight: bold; display: block; }
+  .kpi .l { font-size: 8pt; color: #5A6572; text-transform: uppercase; letter-spacing: 0.04em; }
+  .score-big { font-size: 40pt; font-weight: bold; line-height: 1; }
+  table { width: 100%; border-collapse: collapse; margin: 8pt 0 14pt; font-size: 9pt; }
+  th { text-align: left; background: #F4F6F8; padding: 5pt 7pt; border-bottom: 1px solid #D8DEE4; font-size: 8pt;
+       text-transform: uppercase; letter-spacing: 0.03em; color: #5A6572; }
+  td { padding: 5pt 7pt; border-bottom: 1px solid #EDF0F3; vertical-align: top; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .healthy { color: #2F7A55; } .needs { color: #B5761F; } .critical { color: #B33A3A; }
+  .na { color: #7A858E; font-style: italic; }
+  .bar { height: 7pt; background: #EDF0F3; border-radius: 3pt; overflow: hidden; width: 100%; }
+  .bar span { display: block; height: 100%; }
+  .note { background: #F4F6F8; border-left: 3px solid #9AA7B1; padding: 8pt 10pt; font-size: 9pt;
+          color: #4A5560; margin: 12pt 0; }
+  .dim { page-break-inside: avoid; margin-bottom: 16pt; }
+  .ex { font-family: "DejaVu Sans Mono", monospace; font-size: 8pt; }
+  .page-break { page-break-before: always; }
+</style>
+</head>
+<body>
+
+{% macro cls(b) %}{% if b == 'healthy' %}healthy{% elif b == 'needs attention' %}needs{% elif b == 'critical' %}critical{% else %}na{% endif %}{% endmacro %}
+{% macro colour(s) %}{% if s >= 90 %}#2F7A55{% elif s >= 70 %}#B5761F{% else %}#B33A3A{% endif %}{% endmacro %}
+{% macro ranked_table(rows) %}
+<table>
+  <tr><th>Area</th><th class="num">Score</th><th class="num">Failures</th><th>Consequence if unaddressed</th></tr>
+  {% for d in rows %}
+  <tr>
+    <td><strong>{{ d.label }}</strong></td>
+    {% if d.score is not none %}
+    <td class="num {{ cls(d.band) }}">{{ d.score }}</td>
+    <td class="num">{{ "{:,}".format(d.failed) }}</td>
+    <td>{{ d.impact }}</td>
+    {% else %}
+    <td class="num na">not assessed</td>
+    <td class="num na">&mdash;</td>
+    <td class="na">{{ d.not_assessed }}</td>
+    {% endif %}
+  </tr>
+  {% endfor %}
+</table>
+{% endmacro %}
+
+<div class="cover">
+  <h1>Data Quality Assessment</h1>
+  <p class="sub">{{ name }} · Salesforce {{ environment }} · {{ generated }}</p>
+</div>
+
+<h2>Overall result</h2>
+<p><span class="score-big {{ cls(overall_band) }}">{{ overall if overall is not none else '—' }}</span>
+   <span style="font-size:12pt;color:#5A6572;"> / 100 · {{ overall_band }}</span></p>
+
+<div class="kpis">
+  <div class="kpi"><span class="v">{{ "{:,}".format(records) }}</span><span class="l">Records assessed</span></div>
+  <div class="kpi"><span class="v">{{ objects_completed }} of {{ objects_selected }}</span><span class="l">Objects assessed</span></div>
+  <div class="kpi"><span class="v">{{ cdes }}</span><span class="l">Critical data elements</span></div>
+  <div class="kpi"><span class="v">{{ dimensions_scored }}</span><span class="l">Dimensions scored</span></div>
+</div>
+
+{% if failed_objects %}
+<div class="note"><strong>Partial assessment.</strong> The overall result covers
+{{ objects_completed }} of {{ objects_selected }} selected objects. Not assessed:
+{% for f in failed_objects %}{{ f.label }} — {{ f.error }}{% if not loop.last %}; {% endif %}{% endfor %}</div>
+{% endif %}
+
+<h2>What this means</h2>
+{% if any_assessed %}
+<p>Every dimension across all assessed objects, weakest first, with the
+business consequence of leaving it unaddressed. Dimensions that could not be
+assessed on any object are listed last with the reason.</p>
+{% endif %}
+{{ ranked_table(ranked) }}
+
+<div class="note">The overall result treats the assessed objects as one
+dataset: each dimension score is the pass rate across every rule of every
+object. An object therefore weighs in proportion to how much of it was
+checked, and a small object in poor shape can sit behind a healthy overall
+score. The per-object results below show each one on its own.</div>
+
+<h2>Objects assessed</h2>
+<table>
+  <tr><th>Object</th><th class="num">Records</th><th class="num">Critical fields</th><th class="num">Score</th><th>Weakest area</th></tr>
+  {% for o in objects %}
+  <tr>
+    <td><strong>{{ o.label }}</strong></td>
+    <td class="num">{{ "{:,}".format(o.ctx.records) }}</td>
+    <td class="num">{{ o.ctx.cdes }} of {{ o.ctx.columns }}</td>
+    <td class="num {{ cls(o.ctx.overall_band) }}">{{ o.ctx.overall if o.ctx.overall is not none else '—' }}</td>
+    <td>{% if o.weakest %}{{ o.weakest.label }} ({{ o.weakest.score }}){% else %}—{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+{% for o in objects %}
+{# Each object after the first starts a page. Not the first: the objects
+   table above can spill onto a new page, and breaking again would leave
+   that page nearly empty. #}
+{% if not loop.first %}<div class="page-break"></div>{% endif %}
+<h2>{{ o.label }} — {{ o.ctx.overall if o.ctx.overall is not none else '—' }} / 100</h2>
+<p class="sub" style="margin-bottom:8pt;">{{ "{:,}".format(o.ctx.records) }} records ·
+{{ o.ctx.cdes }} of {{ o.ctx.columns }} fields assessed as critical data elements</p>
+
+{{ ranked_table(o.ctx.ranked) }}
+
+{% if is_in_depth %}
+{% for d in o.ctx.dimensions %}{% if d.rules and not d.not_assessed %}
+<div class="dim">
+  <h3>{{ d.label }} <span class="{{ cls(d.band) }}">— {{ d.score }} / 100</span></h3>
+  <table>
+    <tr><th>Rule</th><th>Column</th><th class="num">Pass rate</th><th class="num">Failed</th></tr>
+    {% for r in d.rules[:rules_shown] %}
+    <tr>
+      <td>{{ r.rule_name }}</td>
+      <td>{{ r.column or 'whole record' }}</td>
+      <td class="num">{{ "%.1f%%" | format(r.passRate * 100) }}</td>
+      <td class="num">{{ "{:,}".format(r.failed) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}{% endfor %}
+
+{% for d in o.ctx.dimensions %}{% for ex in d.examples %}
+<h3>{{ o.label }} · {{ d.label }} — {{ ex.rule.rule_name }}</h3>
+<table class="ex">
+  <tr><th>Row</th><th>Column</th><th>Value</th><th>Issue</th></tr>
+  {% for row in ex.rows %}
+  <tr><td class="num">{{ row.row }}</td><td>{{ row.column or '—' }}</td>
+      <td>{{ row.value }}</td><td>{{ row.reason }}</td></tr>
+  {% endfor %}
+</table>
+{% endfor %}{% endfor %}
+{% endif %}
+{% endfor %}
+
+<h2>Limitations</h2>
+<p>Each object was assessed as the Salesforce Run As user sees it: objects
+and fields that user cannot read were not downloaded. Relationships between
+objects — whether a Contact's Account exists, for instance — were not
+checked in this assessment. Accuracy is assessed without an external source
+of truth: it covers reference-list conformance, cross-field contradiction
+and statistical outliers, and cannot confirm that a plausible value is
+factually correct.</p>
+
+</body>
+</html>

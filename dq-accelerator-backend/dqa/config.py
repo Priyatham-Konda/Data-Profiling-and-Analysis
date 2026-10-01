@@ -202,9 +202,31 @@ BUSINESS_NAME_PATTERNS = [
 DATA_ROOT = Path(os.environ.get("DQA_DATA_ROOT", "./data")).resolve()
 RUNS_DIR = DATA_ROOT / "runs"
 DB_PATH = DATA_ROOT / "runs.db"
+ASSESSMENTS_DIR = DATA_ROOT / "assessments"
 RULE_PACK_PATH = Path(
     os.environ.get("DQA_RULE_PACK", Path(__file__).parent.parent / "rules" / "default_pack.yaml")
 ).resolve()
+
+# --------------------------------------------------------------------------
+# External systems (dqa/connectors/)
+# --------------------------------------------------------------------------
+# Objects in one multi-object assessment. Each becomes a full run.
+ASSESSMENT_MAX_OBJECTS = 25
+
+# Salesforce. The API version is pinned rather than discovered so that a
+# Salesforce release can't change response shapes underneath a running
+# engagement; raise it deliberately.
+SF_API_VERSION = os.environ.get("DQA_SF_API_VERSION", "62.0")
+SF_HTTP_TIMEOUT = float(os.environ.get("DQA_SF_HTTP_TIMEOUT", "120"))
+SF_CONNECTION_IDLE_MINUTES = 30      # an unused connection closes after this
+SF_BULK_PAGE_RECORDS = 50_000        # records per Bulk API results page
+SF_REST_BATCH_SIZE = 2_000           # records per page on the query API fallback
+SF_BULK_POLL_START = 1.0             # seconds between export status checks,
+SF_BULK_POLL_MAX = 10.0              # backing off to this
+SF_SUGGESTED_OBJECTS = [
+    "Account", "Contact", "Lead", "Opportunity", "Case",
+    "Campaign", "Contract", "Order", "Product2", "Asset",
+]
 
 MAX_WORKERS = int(os.environ.get("DQA_MAX_WORKERS", "2"))
 RETENTION_DAYS = int(os.environ.get("DQA_RETENTION_DAYS", "7"))
@@ -212,3 +234,4 @@ RETENTION_DAYS = int(os.environ.get("DQA_RETENTION_DAYS", "7"))
 
 def ensure_dirs() -> None:
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    ASSESSMENTS_DIR.mkdir(parents=True, exist_ok=True)

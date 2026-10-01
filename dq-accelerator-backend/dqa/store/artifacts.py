@@ -62,6 +62,24 @@ def report_path(run_id: str, report_type: str) -> Path:
 _REPLACE_ATTEMPTS = 8
 _REPLACE_BACKOFF = 0.02
 
+# Every reader and writer of these files lives in this one process -- the API
+# threads and the worker pool -- so a lock per file stops the process racing
+# itself on Windows at all. Measured without it: under a tight read loop,
+# writers exhausted their retries and a progress update crashed its run.
+# The retries remain for other processes, which on Windows is typically an
+# antivirus or search indexer briefly holding the file.
+_IO_LOCKS: dict[str, threading.RLock] = {}
+_IO_LOCKS_GUARD = threading.Lock()
+
+
+def _io_lock(path: Path) -> threading.RLock:
+    key = str(path)
+    with _IO_LOCKS_GUARD:
+        lock = _IO_LOCKS.get(key)
+        if lock is None:
+            lock = _IO_LOCKS[key] = threading.RLock()
+        return lock
+
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -73,15 +91,16 @@ def _write_json(path: Path, payload: Any) -> None:
     )
     tmp.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
 
-    for attempt in range(_REPLACE_ATTEMPTS):
-        try:
-            tmp.replace(path)  # atomic: a poller never reads a half-written file
-            return
-        except PermissionError:
-            if attempt == _REPLACE_ATTEMPTS - 1:
-                tmp.unlink(missing_ok=True)
-                raise
-            time.sleep(_REPLACE_BACKOFF * (attempt + 1))
+    with _io_lock(path):
+        for attempt in range(_REPLACE_ATTEMPTS):
+            try:
+                tmp.replace(path)  # atomic: a poller never reads a half-written file
+                return
+            except PermissionError:
+                if attempt == _REPLACE_ATTEMPTS - 1:
+                    tmp.unlink(missing_ok=True)
+                    raise
+                time.sleep(_REPLACE_BACKOFF * (attempt + 1))
 
 
 def _read_json(path: Path) -> Optional[dict]:
@@ -91,17 +110,18 @@ def _read_json(path: Path) -> Optional[dict]:
     # fall back to its defaults and report a run midway through Evaluating
     # as Ingesting, stage 0 -- a progress bar jumping backwards on a state
     # the run was never in. Retried with the writer's backoff instead.
-    for attempt in range(_REPLACE_ATTEMPTS):
-        if not path.exists():
-            return None
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except PermissionError:
-            if attempt == _REPLACE_ATTEMPTS - 1:
+    with _io_lock(path):
+        for attempt in range(_REPLACE_ATTEMPTS):
+            if not path.exists():
                 return None
-            time.sleep(_REPLACE_BACKOFF * (attempt + 1))
-        except (json.JSONDecodeError, OSError):
-            return None
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except PermissionError:
+                if attempt == _REPLACE_ATTEMPTS - 1:
+                    return None
+                time.sleep(_REPLACE_BACKOFF * (attempt + 1))
+            except (json.JSONDecodeError, OSError):
+                return None
     return None
 
 
@@ -114,18 +134,39 @@ def read_meta(run_id: str) -> Optional[dict]:
 
 
 def update_meta(run_id: str, **fields: Any) -> dict:
-    meta = read_meta(run_id) or {}
-    meta.update(fields)
-    write_meta(run_id, meta)
-    return meta
+    # Read, merge and write under the file's lock, so a worker's progress
+    # update and an API request's status change can't overwrite each other.
+    with _io_lock(run_dir(run_id) / "meta.json"):
+        meta = read_meta(run_id) or {}
+        meta.update(fields)
+        write_meta(run_id, meta)
+        return meta
 
 
 def write_profile(run_id: str, profile: DatasetProfile) -> None:
     _write_json(run_dir(run_id) / "profile.json", asdict(profile))
 
 
+def has_profile(run_id: str) -> bool:
+    return (run_dir(run_id) / "profile.json").exists()
+
+
 def read_profile(run_id: str) -> Optional[dict]:
     return _read_json(run_dir(run_id) / "profile.json")
+
+
+def write_source_meta(run_id: str, meta: dict) -> None:
+    """What an external system said about the object behind this run.
+
+    Absent for uploaded files. For Salesforce: the object, how it was
+    downloaded, and each field's description, which the profile endpoint
+    shows beside the column.
+    """
+    _write_json(run_dir(run_id) / "source.json", meta)
+
+
+def read_source_meta(run_id: str) -> Optional[dict]:
+    return _read_json(run_dir(run_id) / "source.json")
 
 
 def write_results(run_id: str, results: dict) -> None:
@@ -210,3 +251,41 @@ def purge(run_id: str) -> bool:
         return False
     shutil.rmtree(path, ignore_errors=True)
     return not path.exists()
+
+
+# --------------------------------------------------------------------------
+# Assessments (API contract revision 5)
+# --------------------------------------------------------------------------
+def assessment_dir(assessment_id: str) -> Path:
+    return config.ASSESSMENTS_DIR / assessment_id
+
+
+def write_assessment_results(assessment_id: str, results: dict) -> None:
+    _write_json(assessment_dir(assessment_id) / "results.json", results)
+
+
+def read_assessment_results(assessment_id: str) -> Optional[dict]:
+    return _read_json(assessment_dir(assessment_id) / "results.json")
+
+
+def assessment_data_path(assessment_id: str) -> Path:
+    """The ZIP of every object's data, built on first download."""
+    return assessment_dir(assessment_id) / "data.zip"
+
+
+def assessment_report_path(assessment_id: str, report_type: str) -> Path:
+    return assessment_dir(assessment_id) / f"report-{report_type}.pdf"
+
+
+def clear_assessment_reports(assessment_id: str) -> None:
+    for path in assessment_dir(assessment_id).glob("report-*.*"):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            log.warning("could not remove stale report %s", path)
+
+
+def purge_assessment(assessment_id: str) -> None:
+    """Remove the assessment's own artifacts. Its runs are purged one by one."""
+    shutil.rmtree(assessment_dir(assessment_id), ignore_errors=True)
+

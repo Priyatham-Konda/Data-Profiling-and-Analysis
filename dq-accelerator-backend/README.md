@@ -2,7 +2,8 @@
 
 Assesses an arbitrary CSV export across seven data quality dimensions and
 returns scores, rule-level breakdowns, failing-record examples and a PDF
-report. Implements `API_CONTRACT.md` revision 4.
+report. Implements `API_CONTRACT.md` revision 5, which adds Salesforce as a
+source alongside uploaded files.
 
 The point is that it receives files it has never seen, with no schema and no
 cooperation from the source system. Column types, semantic meaning and
@@ -15,7 +16,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 
 python tools/make_test_data.py --out tests/fixtures   # golden fixtures
-pytest                                                 # 80 tests
+pytest                                                 # 182 tests
 uvicorn dqa.api.app:app --reload --port 8000
 ```
 
@@ -139,9 +140,37 @@ dqa/
   scoring/           severity-weighted aggregation
   store/             SQLite registry, run artifacts
   report/            Jinja2 + WeasyPrint
-  api/               FastAPI routes
+  api/               FastAPI routes for runs and assessments
+  assessments.py     multi-object assessments and their overall score
+  connectors/        external systems, one folder each (see its README.md)
+    salesforce/      client credentials, object listing, SOQL download
 rules/default_pack.yaml
 ```
+
+### Salesforce
+
+A user enters the org's address, a client ID and a client secret from an
+app the client's administrator set up for Salesforce's client credentials
+flow (`API_CONTRACT.md` has the administrator's checklist). The backend
+lists the org's business objects; the user ticks some; each is downloaded
+with SOQL — Bulk API 2.0, falling back to the query API for the few objects
+Bulk won't export — and written to the run's `source.csv`. **From that point
+every object is an ordinary run**, profiled, paused for CDE confirmation,
+evaluated and scored by exactly the pipeline an upload goes through, so
+scores are comparable across sources. The objects are grouped as an
+*assessment* whose overall score pools every object's rules, as though they
+were one dataset.
+
+The client secret is held in memory only — never written to disk or logs,
+never returned — and discarded, with the access token revoked, as soon as
+the selected objects are downloaded. A backend restart closes every open
+connection. `tests/test_salesforce.py` runs the whole flow against a fake
+org (`tests/fake_salesforce.py`), including a check that the secret appears
+in no file on disk afterwards.
+
+Not yet built, and marked **Next** in the contract: integrity checks across
+objects (does each Contact's Account exist?) and rules generated from
+Salesforce's own field metadata.
 
 ### Two design decisions worth knowing
 
@@ -167,7 +196,11 @@ data/runs/{run_id}/
     results.json        scores and per-rule counters
     violations/{dimension}/{rule_id}.jsonl
     report-{type}.pdf
-data/runs.db            SQLite: id, file, status, overall
+data/runs.db            SQLite: runs, and assessments
+data/runs/{run_id}/source.json            what Salesforce said about the object
+data/assessments/{assessment_id}/
+    results.json        the pooled overall score
+    report-{type}.pdf
 ```
 
 `GET /runs` is polled every 5 seconds per open tab, so it reads only the
@@ -262,9 +295,9 @@ source code.
 
 ## Next phase
 
-Salesforce, SFTP and Oracle connectors behind the existing `read()` /
-`describe()` interface; cross-source rollup; and the cross-dataset half of
-the integrity dimension.
-Salesforce is the highest-value addition, because its Describe API supplies
-declared types, required flags and picklist values, which means validity and
-consistency rules can be generated from real metadata rather than inferred.
+Salesforce now works through client credentials. Next for it: a sign-in
+flow to replace entering credentials, integrity checks across the selected
+objects, and rules generated from Salesforce's own field metadata — declared
+types, required flags and picklist values, rather than expectations inferred
+from the data. After that, SFTP and Oracle as further folders under
+`dqa/connectors/`.

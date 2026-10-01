@@ -14,6 +14,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import config
 from ..store import registry
+from .. import connectors
+from .assessment_routes import router as assessment_router
 from .routes import router
 
 logging.basicConfig(
@@ -54,7 +56,12 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.include_router(router, prefix=os.environ.get("DQA_API_PREFIX", "/api"))
+    prefix = os.environ.get("DQA_API_PREFIX", "/api")
+    app.include_router(router, prefix=prefix)
+    app.include_router(assessment_router, prefix=prefix)
+    # Each external system mounts its own endpoints (dqa/connectors/<system>/).
+    for system_router in connectors.routers():
+        app.include_router(system_router, prefix=prefix)
 
     @app.get("/health")
     def health() -> dict:

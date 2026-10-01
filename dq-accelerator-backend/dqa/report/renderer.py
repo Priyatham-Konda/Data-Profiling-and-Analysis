@@ -143,7 +143,11 @@ def render_report(run_id: str, report_type: str = "summary") -> Path:
     context = build_context(run_id, report_type)
     html = _env().get_template("report.html.j2").render(**context)
     output = artifacts.report_path(run_id, report_type)
+    _write_pdf(html, output)
+    return output
 
+
+def _write_pdf(html: str, output: Path) -> None:
     try:
         from weasyprint import HTML
 
@@ -163,4 +167,78 @@ def render_report(run_id: str, report_type: str = "summary") -> Path:
             "and Cairo system libraries. An HTML copy of the report was saved "
             f"to {fallback.name} instead."
         ) from exc
+
+
+# --------------------------------------------------------------------------
+# Multi-object assessments (API contract revision 5)
+# --------------------------------------------------------------------------
+def build_assessment_context(assessment_id: str, report_type: str) -> dict[str, Any]:
+    """One report for the whole assessment: the pooled result, then each
+    object with exactly the content its own report would carry."""
+    from .. import assessments
+
+    body = assessments.detail(assessment_id)
+    if body is None or body["status"] != "completed":
+        raise ValueError("Assessment has no results to report on")
+    results = artifacts.read_assessment_results(assessment_id) or assessments.compute(
+        assessment_id
+    )
+
+    dimensions = []
+    for key in config.DIMENSIONS:
+        score = results["scores"].get(key)
+        dimensions.append({
+            "key": key,
+            "label": key.title(),
+            "score": score,
+            "band": band(score),
+            "impact": DIMENSION_IMPACT.get(key, ""),
+            "failed": results.get("failures", {}).get(key, 0),
+            "not_assessed": results["notAssessed"].get(key),
+        })
+    assessed = [d for d in dimensions if d["score"] is not None]
+    ranked = sorted(assessed, key=lambda d: d["score"])
+    ranked += [d for d in dimensions if d["score"] is None]
+
+    objects, failed_objects = [], []
+    for entry in body["runs"]:
+        if entry["status"] == "completed":
+            ctx = build_context(entry["id"], report_type)
+            objects.append({
+                "label": entry["label"],
+                "name": entry["object"],
+                "ctx": ctx,
+                "weakest": next((d for d in ctx["ranked"] if d["score"] is not None), None),
+            })
+        else:
+            failed_objects.append({"label": entry["label"], "error": entry.get("error", "")})
+
+    source = body.get("source", {})
+    return {
+        "name": body["name"],
+        "environment": source.get("environment", ""),
+        "generated": datetime.now().strftime("%d %B %Y at %H:%M"),
+        "overall": results["overall"],
+        "overall_band": band(results["overall"]),
+        "records": results["records"],
+        "cdes": sum(o["ctx"]["cdes"] for o in objects),
+        "objects_selected": len(body["runs"]),
+        "objects_completed": len(objects),
+        "dimensions_scored": len(assessed),
+        "ranked": ranked,
+        "any_assessed": bool(assessed),
+        "objects": objects,
+        "failed_objects": failed_objects,
+        "report_type": report_type,
+        "is_in_depth": report_type == "in-depth",
+        "rules_shown": config.REPORT_RULES_SHOWN,
+    }
+
+
+def render_assessment_report(assessment_id: str, report_type: str = "summary") -> Path:
+    context = build_assessment_context(assessment_id, report_type)
+    html = _env().get_template("assessment_report.html.j2").render(**context)
+    output = artifacts.assessment_report_path(assessment_id, report_type)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    _write_pdf(html, output)
     return output

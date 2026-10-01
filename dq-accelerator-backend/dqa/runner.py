@@ -13,11 +13,12 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from . import config
 from .cde import detector
 from .checks import integrity as integrity_checks
+from .connectors.base import ExtractionError, Extractor
 from .checks import timeliness as timeliness_checks
 from .ingest.reader import CsvSource, IngestError, open_source
 from .models import ColumnProfile, DatasetProfile, RunContext
@@ -63,15 +64,24 @@ def _clear_cancel(run_id: str) -> None:
 # --------------------------------------------------------------------------
 # Progress
 # --------------------------------------------------------------------------
-def _report(run_id: str, stage: str, progress: float) -> None:
-    artifacts.update_meta(
-        run_id,
-        status="processing",
-        stage=stage,
-        stageIndex=config.STAGES.index(stage),
-        stageCount=len(config.STAGES),
-        progress=round(min(max(progress, 0.0), 1.0), 3),
-    )
+def _report(run_id: str, stage: str, progress: float, detail: Optional[str] = None) -> None:
+    # `detail` is always written, so a detail from one stage -- "Downloading
+    # from Salesforce: ..." -- can't linger into the next one.
+    try:
+        artifacts.update_meta(
+            run_id,
+            status="processing",
+            stage=stage,
+            stageIndex=config.STAGES.index(stage),
+            stageCount=len(config.STAGES),
+            progress=round(min(max(progress, 0.0), 1.0), 3),
+            stageDetail=detail,
+        )
+    except OSError:
+        # A progress bar missing one step is cosmetic; failing a client's
+        # assessment over it is not. Status changes are written elsewhere
+        # and still fail loudly.
+        log.warning("could not record progress for run %s", run_id)
 
 
 def _check_cancelled(ctx: RunContext) -> None:
@@ -121,9 +131,92 @@ def _execute(
         _clear_cancel(run_id)
 
 
+def submit_extraction(
+    run_id: str,
+    original_filename: str,
+    extract: Extractor,
+    on_extracted: Callable[[], None],
+) -> None:
+    """Start a run whose data comes from an external system.
+
+    The download happens inside the Ingesting stage, writing the run's
+    source.csv; from then on the run is indistinguishable from an upload and
+    goes through exactly the same first half, stopping at awaiting_cdes.
+    `on_extracted` is called once the download has ended, however it ended,
+    so the system can let go of its credentials.
+    """
+    event = register_cancel(run_id)
+    _EXECUTOR.submit(
+        _execute_extraction, run_id, original_filename, extract, on_extracted, event
+    )
+
+
+def _execute_extraction(
+    run_id: str,
+    original_filename: str,
+    extract: Extractor,
+    on_extracted: Callable[[], None],
+    cancel_event: threading.Event,
+) -> None:
+    started = time.time()
+    ctx = RunContext(
+        run_id=run_id,
+        source_path=str(artifacts.source_path(run_id)),
+        original_filename=original_filename,
+        cancel_event=cancel_event,
+    )
+
+    def progress(fraction: float, detail: str) -> None:
+        # The download is most of Ingesting; reading the file back is the rest.
+        _report(run_id, "Ingesting", 0.95 * fraction, detail)
+
+    try:
+        try:
+            _check_cancelled(ctx)
+            meta = extract(
+                artifacts.source_path(run_id), progress, lambda: _check_cancelled(ctx)
+            )
+        finally:
+            on_extracted()
+        artifacts.write_source_meta(run_id, meta)
+        log.info("run %s downloaded %s records in %.1fs",
+                 run_id, meta.get("records"), time.time() - started)
+        run_assessment(ctx, stop_after_profiling=True, ingest_started=True)
+    except RunCancelled:
+        log.info("run %s cancelled", run_id)
+        # Deleted mid-download. On Windows the open source.csv can stop the
+        # DELETE from removing the directory, so the job removes what it left.
+        if registry.get(run_id) is None:
+            artifacts.purge(run_id)
+    except (ExtractionError, IngestError) as exc:
+        _fail(run_id, str(exc))
+    except Exception as exc:  # noqa: BLE001
+        log.exception("run %s failed", run_id)
+        _fail(run_id, _friendly_error(exc))
+    finally:
+        _clear_cancel(run_id)
+
+
 def _fail(run_id: str, message: str) -> None:
-    artifacts.update_meta(run_id, status="failed", error=message)
+    if registry.get(run_id) is None:
+        return  # deleted while running; writing meta would recreate its directory
+    artifacts.update_meta(run_id, status="failed", error=message, stageDetail=None)
     registry.set_status(run_id, "failed")
+    _notify_finished(run_id)
+
+
+def _notify_finished(run_id: str) -> None:
+    """Tell the run's assessment, if it has one, that the run finished.
+
+    Imported here, not at the top: the assessment module drives the runner,
+    and must never be able to fail a run through this hook.
+    """
+    try:
+        from . import assessments
+
+        assessments.run_finished(run_id)
+    except Exception:  # noqa: BLE001
+        log.exception("assessment update failed after run %s", run_id)
 
 
 def _friendly_error(exc: Exception) -> str:
@@ -205,13 +298,14 @@ def run_assessment(
     ctx: RunContext,
     cde_override: Optional[list[str]] = None,
     stop_after_profiling: bool = False,
+    ingest_started: bool = False,
 ) -> dict:
     """Ingest and profile, then -- unless paused -- evaluate and score.
 
     `stop_after_profiling` is how a new upload runs only the first half and
     parks at `awaiting_cdes`. The second half is resume_from_profile.
     """
-    plan, profile, cde_overridden = _ingest_and_profile(ctx, cde_override)
+    plan, profile, cde_overridden = _ingest_and_profile(ctx, cde_override, ingest_started)
     if stop_after_profiling:
         return _await_cde_confirmation(ctx.run_id, profile, plan.total_rows)
     return _evaluate_and_score(ctx, plan, profile, cde_overridden)
@@ -253,13 +347,18 @@ def resume_from_profile(ctx: RunContext, cde_override: list[str]) -> dict:
 
 
 def _ingest_and_profile(
-    ctx: RunContext, cde_override: Optional[list[str]]
+    ctx: RunContext,
+    cde_override: Optional[list[str]],
+    ingest_started: bool = False,
 ) -> tuple[_ReadPlan, DatasetProfile, bool]:
     """Stages 1 and 2. Writes profile.json, which the second half reads."""
     run_id = ctx.run_id
 
     # -- Stage 1: Ingesting -------------------------------------------------
-    _report(run_id, "Ingesting", 0.0)
+    # After a download the stage is already most of the way through; going
+    # back to 0.0 would show the progress bar jumping backwards.
+    if not ingest_started:
+        _report(run_id, "Ingesting", 0.0)
     source = open_source(ctx.source_path)
     ctx.dialect = source.dialect
     _check_cancelled(ctx)
@@ -406,6 +505,7 @@ def _evaluate_and_score(
         error=None,
     )
     registry.set_status(run_id, "completed", overall)
+    _notify_finished(run_id)
     return payload
 
 

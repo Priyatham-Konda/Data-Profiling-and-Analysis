@@ -14,6 +14,7 @@ phonenumbers==8.13.52      # Apache 2.0
 Metaphone==0.6             # BSD
 Jinja2==3.1.5              # BSD 3-Clause
 weasyprint==63.1           # BSD 3-Clause
+httpx==0.28.1              # BSD 3-Clause -- external systems (dqa/connectors/)
 
 # NOT USED, recorded deliberately:
 #   pycountry  -- LGPL 2.1; reference data is bundled instead

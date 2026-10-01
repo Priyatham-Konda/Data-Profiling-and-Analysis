@@ -1,6 +1,8 @@
-"""HTTP API.
+"""HTTP API for runs.
 
-Implements API_CONTRACT.md revision 2 exactly. Every error response carries
+Implements the run endpoints of API_CONTRACT.md (revision 5). Assessments
+are in assessment_routes.py and each external system's endpoints in its own
+folder under dqa/connectors/. Every error response carries
 `{"error": "..."}` with a message written for a person, because the frontend
 shows that string verbatim.
 """
@@ -24,6 +26,8 @@ from ..models import DatasetProfile
 from ..report.renderer import render_report
 from ..runner import cancel, resubmit_with_cdes, submit
 from ..store import artifacts, registry
+from .downloads import run_data_ready, run_data_response
+from .views import run_view
 
 log = logging.getLogger("dqa.api")
 router = APIRouter()
@@ -118,8 +122,10 @@ async def create_run(request: Request, file: UploadFile = File(...)) -> Any:
 # GET /runs
 # ==========================================================================
 @router.get("/runs")
-async def list_runs() -> Any:
-    return registry.list_runs()
+async def list_runs(include: Optional[str] = Query(None)) -> Any:
+    # Object runs of an assessment are listed through GET /assessments, so
+    # the sidebar doesn't fill with one entry per Salesforce object.
+    return registry.list_runs(include_assessment_runs=(include == "all"))
 
 
 # ==========================================================================
@@ -130,62 +136,10 @@ async def get_run(run_id: str) -> Any:
     record = registry.get(run_id)
     if record is None:
         return _error(404, "That assessment could not be found.")
-
-    meta = artifacts.read_meta(run_id) or {}
-    status = record["status"]
-
-    if status == "processing":
-        return {
-            "id": run_id,
-            "file": record["file"],
-            "status": "processing",
-            "stage": meta.get("stage", config.STAGES[0]),
-            "stageIndex": meta.get("stageIndex", 0),
-            "stageCount": len(config.STAGES),
-            "progress": meta.get("progress", 0.0),
-        }
-
-    if status == "awaiting_cdes":
-        # No scores and no overall: Evaluating has not run. The three counts
-        # below were all established during Profiling, which is what lets
-        # this state exist at all.
-        return {
-            "id": run_id,
-            "file": record["file"],
-            "status": "awaiting_cdes",
-            "records": meta.get("records", 0),
-            "columns": meta.get("columns", 0),
-            "cdes": meta.get("cdes", 0),
-        }
-
-    if status == "failed":
-        return {
-            "id": run_id,
-            "file": record["file"],
-            "status": "failed",
-            "error": meta.get("error", "The assessment failed for an unknown reason."),
-        }
-
-    results = artifacts.read_results(run_id)
-    if results is None:
+    body = run_view(record)
+    if body is None:
         return _error(500, "The assessment finished but its results are missing.")
-
-    return {
-        "id": run_id,
-        "file": record["file"],
-        "status": "completed",
-        "overall": results.get("overall"),
-        "records": results.get("records", 0),
-        "cdes": results.get("cdes", 0),
-        "scores": results.get("scores", {}),
-        # Additive fields, see API_CONTRACT.md
-        "columns": results.get("columns"),
-        "sampled": results.get("sampled", False),
-        "sampledRows": results.get("sampledRows"),
-        "notAssessed": results.get("notAssessed", {}),
-        "parseWarnings": results.get("parseWarnings", 0),
-        "cdeOverridden": results.get("cdeOverridden", False),
-    }
+    return body
 
 
 # ==========================================================================
@@ -221,6 +175,14 @@ async def get_profile(run_id: str) -> Any:
                              or "No strong signal either way",
             }
         )
+
+    # Object runs carry what their system said about each field.
+    source_meta = artifacts.read_source_meta(run_id)
+    if source_meta and source_meta.get("type") == "salesforce":
+        described = source_meta.get("fields", {})
+        for column in columns:
+            if column["name"] in described:
+                column["salesforce"] = described[column["name"]]
     return {"columns": columns}
 
 
@@ -244,6 +206,14 @@ async def override_cdes(run_id: str, payload: CdeOverride) -> Any:
         return _error(
             409,
             "The columns can only be set once profiling has finished.",
+        )
+    if record.get("assessment_id") and record["status"] == "awaiting_cdes":
+        # Every object of an assessment starts scoring together, from one
+        # confirm screen. Re-scoring a completed object here is fine.
+        return _error(
+            409,
+            "Confirm this object's columns through its assessment, together with "
+            "the other objects.",
         )
 
     profile = artifacts.read_profile(run_id)
@@ -392,6 +362,23 @@ async def get_report(run_id: str, type: str = Query("summary")) -> Any:
 
 
 # ==========================================================================
+# GET /runs/{id}/data
+# ==========================================================================
+@router.get("/runs/{run_id}/data")
+def get_data(run_id: str) -> Any:
+    """The CSV profiling and scoring ran on (API contract revision 5)."""
+    record = registry.get(run_id)
+    if record is None:
+        return _error(404, "That assessment could not be found.")
+    if not run_data_ready(run_id):
+        return _error(
+            409,
+            "The data can be downloaded once profiling has finished.",
+        )
+    return run_data_response(record)
+
+
+# ==========================================================================
 # DELETE /runs/{id}
 # ==========================================================================
 # Not declared as status_code=204 on the decorator: a 204 may carry no body,
@@ -402,6 +389,14 @@ async def delete_run(run_id: str) -> Any:
     record = registry.get(run_id)
     if record is None:
         return _error(404, "That assessment could not be found.")
+    if record.get("assessment_id"):
+        # Deleting one object would leave the overall score describing data
+        # that no longer exists; the assessment is deleted as a whole.
+        return _error(
+            409,
+            "This object belongs to a Salesforce assessment. Delete the assessment "
+            "instead, which removes all its objects together.",
+        )
 
     # Cancel first: the contract states that deleting a processing run
     # cancels the underlying job, and the UI warns the user of exactly that.
