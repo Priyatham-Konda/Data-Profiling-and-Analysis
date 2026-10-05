@@ -1,0 +1,11 @@
+# Node
+node_modules/
+dist/
+
+# Local backend URL is machine-specific -- see .env.local.example for the
+# template that IS committed.
+.env.local
+
+# Editors
+.vscode/
+.idea/
