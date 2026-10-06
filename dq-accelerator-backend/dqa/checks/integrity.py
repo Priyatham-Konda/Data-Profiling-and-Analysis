@@ -101,6 +101,7 @@ class CardinalityHolds:
         self.pairs: list[tuple[str, str]] | None = None
         self.first: dict[tuple[str, str], dict[str, tuple[str, int]]] = {}
         self.conflict_rows: dict[tuple[str, str], list[tuple]] = {}
+        self.valid_rows: dict[tuple[str, str], list[tuple]] = {}
         self.conflict_keys: dict[tuple[str, str], set[str]] = {}
         self.conflict_count: dict[tuple[str, str], int] = {}
         self.evaluated: dict[tuple[str, str], int] = {}
@@ -130,6 +131,7 @@ class CardinalityHolds:
         for pair in pairs:
             self.first[pair] = {}
             self.conflict_rows[pair] = []
+            self.valid_rows[pair] = []
             self.conflict_keys[pair] = set()
             self.conflict_count[pair] = 0
             self.evaluated[pair] = 0
@@ -158,6 +160,7 @@ class CardinalityHolds:
                 key = det_values.loc[idx].lower()
                 value = dep_values.loc[idx]
                 self.evaluated[pair] += 1
+                row_idx = int(rows.loc[idx])
 
                 known = seen.get(key)
                 if known is None:
@@ -165,7 +168,9 @@ class CardinalityHolds:
                     # checking known ones. A file with millions of distinct
                     # keys holds no functional dependency worth reporting.
                     if len(seen) < config.INTEGRITY_MAX_KEYS:
-                        seen[key] = (value, int(rows.loc[idx]))
+                        seen[key] = (value, row_idx)
+                    if len(self.valid_rows[pair]) < config.EXAMPLE_CAP:
+                        self.valid_rows[pair].append((row_idx, value))
                     continue
 
                 if value.lower() != known[0].lower():
@@ -173,13 +178,16 @@ class CardinalityHolds:
                     self.conflict_count[pair] += 1
                     if len(self.conflict_rows[pair]) < config.EXAMPLE_CAP:
                         self.conflict_rows[pair].append(
-                            (int(rows.loc[idx]), det_values.loc[idx],
+                            (row_idx, det_values.loc[idx],
                              value, known[0], known[1])
                         )
+                else:
+                    if len(self.valid_rows[pair]) < config.EXAMPLE_CAP:
+                        self.valid_rows[pair].append((row_idx, value))
 
-    def finalise(self, rule: Rule, ctx: dict) -> tuple[int, int, list[Violation]]:
+    def finalise(self, rule: Rule, ctx: dict) -> tuple[int, int, list[Violation], list[Violation]]:
         if not self.pairs:
-            return 0, 0, []
+            return 0, 0, [], []
 
         # One determinant per dependent column. A column can look like a
         # function of several others at once, and counting each pairing
@@ -215,6 +223,7 @@ class CardinalityHolds:
         evaluated = 0
         failed = 0
         violations: list[Violation] = []
+        valid_examples: list[Violation] = []
 
         for dep_name, (_, pair, conflicting) in sorted(best.items()):
             det_name = pair[0]
@@ -233,8 +242,18 @@ class CardinalityHolds:
                         ),
                     )
                 )
+            
+            for row, value in self.valid_rows[pair]:
+                valid_examples.append(
+                    Violation(
+                        row=row,
+                        column=dep_name,
+                        value=value,
+                        reason="Passed"
+                    )
+                )
 
-        return evaluated, failed, violations[: config.EXAMPLE_CAP]
+        return evaluated, failed, violations[: config.EXAMPLE_CAP], valid_examples[: config.EXAMPLE_CAP]
 
 
 # --------------------------------------------------------------------------
@@ -259,6 +278,7 @@ class DependentFieldPopulated:
         self.parent_present: dict[tuple[str, str], int] = {}
         self.both_present: dict[tuple[str, str], int] = {}
         self.gaps: dict[tuple[str, str], list[tuple[int, str]]] = {}
+        self.valid_rows: dict[tuple[str, str], list[tuple[int, str]]] = {}
 
     def _select(self, ctx: dict) -> None:
         columns = _candidate_columns(ctx)
@@ -283,6 +303,7 @@ class DependentFieldPopulated:
             self.parent_present[pair] = 0
             self.both_present[pair] = 0
             self.gaps[pair] = []
+            self.valid_rows[pair] = []
 
     def accumulate(self, chunk: pd.DataFrame, rule: Rule, ctx: dict) -> None:
         if self.pairs is None:
@@ -302,8 +323,9 @@ class DependentFieldPopulated:
                 continue
 
             missing = parent_mask & ~dependent_mask
+            present = parent_mask & dependent_mask
             self.parent_present[pair] += int(parent_mask.sum())
-            self.both_present[pair] += int((parent_mask & dependent_mask).sum())
+            self.both_present[pair] += int(present.sum())
 
             if missing.any() and len(self.gaps[pair]) < config.EXAMPLE_CAP:
                 parent_values = _values(chunk, parent_name)
@@ -312,10 +334,18 @@ class DependentFieldPopulated:
                     self.gaps[pair].append(
                         (int(rows.loc[idx]), parent_values.loc[idx])
                     )
+            
+            if present.any() and len(self.valid_rows[pair]) < config.EXAMPLE_CAP:
+                dependent_values = _values(chunk, dependent_name)
+                remaining_valid = config.EXAMPLE_CAP - len(self.valid_rows[pair])
+                for idx in present[present].index[:remaining_valid]:
+                    self.valid_rows[pair].append(
+                        (int(rows.loc[idx]), dependent_values.loc[idx])
+                    )
 
-    def finalise(self, rule: Rule, ctx: dict) -> tuple[int, int, list[Violation]]:
+    def finalise(self, rule: Rule, ctx: dict) -> tuple[int, int, list[Violation], list[Violation]]:
         if not self.pairs:
-            return 0, 0, []
+            return 0, 0, [], []
 
         support = rule.params.get("support", config.INTEGRITY_DEPENDENCY_SUPPORT)
 
@@ -341,6 +371,7 @@ class DependentFieldPopulated:
         evaluated = 0
         failed = 0
         violations: list[Violation] = []
+        valid_examples: list[Violation] = []
 
         for dependent_name, (rate, pair, seen) in sorted(best.items()):
             parent_name = pair[0]
@@ -362,7 +393,17 @@ class DependentFieldPopulated:
                     )
                 )
 
-        return evaluated, failed, violations[: config.EXAMPLE_CAP]
+            for row, dependent_value in self.valid_rows[pair]:
+                valid_examples.append(
+                    Violation(
+                        row=row,
+                        column=dependent_name,
+                        value=dependent_value,
+                        reason="Passed"
+                    )
+                )
+
+        return evaluated, failed, violations[: config.EXAMPLE_CAP], valid_examples[: config.EXAMPLE_CAP]
 
 
 # --------------------------------------------------------------------------

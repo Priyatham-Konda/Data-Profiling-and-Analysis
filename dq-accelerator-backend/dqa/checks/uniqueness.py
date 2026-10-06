@@ -63,7 +63,7 @@ class ExactRecordDuplicate:
     """Whole-record duplicates across the CDE columns."""
 
     def __init__(self):
-        self.seen: dict[str, int] = {}
+        self.seen: dict[str, tuple[int, str]] = {}
         self.duplicates: list[tuple[int, int, str]] = []
         self.total = 0
 
@@ -83,11 +83,11 @@ class ExactRecordDuplicate:
             digest = hashlib.blake2b(key.encode("utf-8"), digest_size=16).hexdigest()
             row_no = int(rows.loc[idx])
             if digest in self.seen:
-                self.duplicates.append((row_no, self.seen[digest], key))
+                self.duplicates.append((row_no, self.seen[digest][0], key))
             else:
-                self.seen[digest] = row_no
+                self.seen[digest] = (row_no, key)
 
-    def finalise(self, rule: Rule, ctx: dict) -> tuple[int, int, list[Violation]]:
+    def finalise(self, rule: Rule, ctx: dict) -> tuple[int, int, list[Violation], list[Violation]]:
         violations = [
             Violation(
                 row=row,
@@ -97,7 +97,23 @@ class ExactRecordDuplicate:
             )
             for row, first, key in self.duplicates[: config.EXAMPLE_CAP]
         ]
-        return self.total, len(self.duplicates), violations
+        
+        duplicate_first_rows = {first_row for _, first_row, _ in self.duplicates}
+        valid_examples = []
+        for row_no, key in self.seen.values():
+            if row_no not in duplicate_first_rows:
+                valid_examples.append(
+                    Violation(
+                        row=row_no,
+                        column=None,
+                        value=_preview(key),
+                        reason="Passed"
+                    )
+                )
+                if len(valid_examples) >= config.EXAMPLE_CAP:
+                    break
+
+        return self.total, len(self.duplicates), violations, valid_examples
 
 
 # --------------------------------------------------------------------------
@@ -134,7 +150,7 @@ class CandidateKeyDuplicate:
             else:
                 self.seen[value] = row_no
 
-    def finalise(self, rule: Rule, ctx: dict) -> tuple[int, int, list[Violation]]:
+    def finalise(self, rule: Rule, ctx: dict) -> tuple[int, int, list[Violation], list[Violation]]:
         violations = [
             Violation(
                 row=row,
@@ -145,7 +161,23 @@ class CandidateKeyDuplicate:
             )
             for row, first, value in self.duplicates[: config.EXAMPLE_CAP]
         ]
-        return self.total, len(self.duplicates), violations
+        
+        duplicate_first_rows = {first_row for _, first_row, _ in self.duplicates}
+        valid_examples = []
+        for value, row_no in self.seen.items():
+            if row_no not in duplicate_first_rows:
+                valid_examples.append(
+                    Violation(
+                        row=row_no,
+                        column=self.key_column,
+                        value=value[:200],
+                        reason="Passed",
+                    )
+                )
+                if len(valid_examples) >= config.EXAMPLE_CAP:
+                    break
+                    
+        return self.total, len(self.duplicates), violations, valid_examples
 
 
 # --------------------------------------------------------------------------
@@ -214,14 +246,14 @@ class FuzzyDuplicate:
                     keys.append("n:" + norm[:3] + ":" + _metaphone(norm))
         return keys
 
-    def finalise(self, rule: Rule, ctx: dict) -> tuple[int, int, list[Violation]]:
+    def finalise(self, rule: Rule, ctx: dict) -> tuple[int, int, list[Violation], list[Violation]]:
         threshold = int(rule.params.get("threshold", config.FUZZY_THRESHOLD))
         max_block = int(rule.params.get("max_block_size", config.FUZZY_MAX_BLOCK_SIZE))
 
         try:
             from rapidfuzz import fuzz
         except ImportError:
-            return self.total, 0, []
+            return self.total, 0, [], []
 
         uf = _UnionFind()
         compared: set[tuple[int, int]] = set()
@@ -244,12 +276,16 @@ class FuzzyDuplicate:
         # Every member beyond the first in a cluster is a duplicate.
         failed = sum(len(members) - 1 for members in clusters.values())
 
+        duplicate_rows = set()
         violations: list[Violation] = []
         for members in clusters.values():
-            if len(violations) >= config.EXAMPLE_CAP:
-                break
             ordered = sorted(members)
             keeper = ordered[0]
+            duplicate_rows.update(ordered[1:])
+            
+            if len(violations) >= config.EXAMPLE_CAP:
+                continue
+                
             for row in ordered[1:]:
                 if len(violations) >= config.EXAMPLE_CAP:
                     break
@@ -262,7 +298,22 @@ class FuzzyDuplicate:
                                f"({', '.join(self.columns_used)})",
                     )
                 )
-        return self.total, failed, violations
+
+        valid_examples: list[Violation] = []
+        for row_no, comparison in self.records.items():
+            if row_no not in duplicate_rows:
+                valid_examples.append(
+                    Violation(
+                        row=row_no,
+                        column=None,
+                        value=_preview(comparison),
+                        reason="Passed",
+                    )
+                )
+                if len(valid_examples) >= config.EXAMPLE_CAP:
+                    break
+                    
+        return self.total, failed, violations, valid_examples
 
 
 # --------------------------------------------------------------------------

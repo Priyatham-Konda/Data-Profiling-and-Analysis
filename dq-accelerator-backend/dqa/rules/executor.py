@@ -114,13 +114,14 @@ class RuleExecutor:
             if rule.id in self.errors or kind_of(rule.check) != "stateful":
                 continue
             try:
-                evaluated, failed, violations = self._stateful[rule.id].finalise(
+                evaluated, failed, violations, valid_examples = self._stateful[rule.id].finalise(
                     rule, self.ctx
                 )
                 result = self.results[rule.id]
                 result.evaluated = evaluated
                 result.failed = failed
                 self.violations[rule.id] = violations[: self.example_cap]
+                self.valid_examples[rule.id] = valid_examples[: self.example_cap]
             except Exception as exc:
                 self.errors[rule.id] = f"{type(exc).__name__}: {exc}"
 

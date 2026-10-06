@@ -43,8 +43,8 @@ class StatefulCheck(Protocol):
 
     def accumulate(self, chunk: pd.DataFrame, rule: Rule, ctx: dict) -> None: ...
 
-    def finalise(self, rule: Rule, ctx: dict) -> tuple[int, int, list[Violation]]:
-        """Return (evaluated, failed, violations)."""
+    def finalise(self, rule: Rule, ctx: dict) -> tuple[int, int, list[Violation], list[Violation]]:
+        """Return (evaluated, failed, violations, valid_examples)."""
         ...
 
 
