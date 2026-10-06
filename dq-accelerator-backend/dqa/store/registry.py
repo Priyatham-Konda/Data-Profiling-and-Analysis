@@ -116,7 +116,7 @@ def list_runs(limit: int = 200, include_assessment_runs: bool = False) -> list[d
     where = "" if include_assessment_runs else "WHERE assessment_id IS NULL "
     with _LOCK, _connect() as conn:
         rows = conn.execute(
-            "SELECT id, file, status, overall, assessment_id FROM runs "
+            "SELECT id, file, status, overall, assessment_id, created_at FROM runs "
             f"{where}ORDER BY created_at DESC LIMIT ?",
             (limit,),
         ).fetchall()
@@ -127,6 +127,7 @@ def list_runs(limit: int = 200, include_assessment_runs: bool = False) -> list[d
             "id": row["id"],
             "file": row["file"],
             "status": row["status"],
+            "createdAt": row["created_at"],
         }
         # `overall` is present ONLY on completed runs, per the contract.
         if row["status"] == "completed" and row["overall"] is not None:
@@ -197,7 +198,7 @@ def list_assessments(limit: int = 200) -> list[dict[str, Any]]:
     """
     with _LOCK, _connect() as conn:
         rows = conn.execute(
-            "SELECT a.id, a.name, a.objects, a.overall, "
+            "SELECT a.id, a.name, a.objects, a.overall, a.created_at, "
             "  (SELECT group_concat(r.status, ',') FROM runs r "
             "   WHERE r.assessment_id = a.id) AS statuses "
             "FROM assessments a ORDER BY a.created_at DESC LIMIT ?",

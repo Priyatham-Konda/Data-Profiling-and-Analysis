@@ -29,7 +29,24 @@ import {
 const IDLE_MS = 30 * 60 * 1000;
 
 const connections = new Map();
-const assessments = new Map();
+const assessments = new Map([
+  [
+    'asm_sf_1',
+    {
+      id: 'asm_sf_1',
+      name: 'Acme Corporation',
+      connectionId: 'sfc_1',
+      source: {
+        type: 'salesforce',
+        orgName: 'Acme Corporation',
+        orgId: '00D12345678901',
+        environment: 'production',
+      },
+      runIds: ['run_sf_1', 'run_sf_2'],
+      createdAt: new Date(Date.now() - 40 * 60_000).toISOString(),
+    },
+  ],
+]);
 
 let seq = 0;
 function nextId(prefix) {
@@ -415,6 +432,7 @@ export function assessmentSummary(assessment) {
     id: detail.id,
     name: detail.name,
     status: detail.status,
+    createdAt: assessment.createdAt,
     objects: assessment.runIds.length,
     ...(detail.status === STATUS.COMPLETED ? { overall: detail.overall } : {}),
   };

@@ -102,7 +102,8 @@ export const handlers = [
     if (!run) return HttpResponse.json({ error: 'Run not found.' }, { status: 404 });
 
     const limit = Number(new URL(request.url).searchParams.get('limit')) || 10;
-    const result = ruleExamples(run, params.dim, params.ruleId, limit);
+    const validity = new URL(request.url).searchParams.get('validity') || 'invalid';
+    const result = ruleExamples(run, params.dim, params.ruleId, limit, validity);
     if (!result) return HttpResponse.json({ error: 'Rule not found.' }, { status: 404 });
     return HttpResponse.json(result);
   }),

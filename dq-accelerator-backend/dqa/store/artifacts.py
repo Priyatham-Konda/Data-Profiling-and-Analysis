@@ -180,16 +180,17 @@ def read_results(run_id: str) -> Optional[dict]:
 # --------------------------------------------------------------------------
 # Violations
 # --------------------------------------------------------------------------
-def violations_path(run_id: str, dimension: str, rule_id: str) -> Path:
+def violations_path(run_id: str, dimension: str, rule_id: str, validity: str = "invalid") -> Path:
     safe = rule_id.replace("/", "_").replace("\\", "_")
-    return run_dir(run_id) / "violations" / dimension / f"{safe}.jsonl"
+    folder = "violations" if validity == "invalid" else "valid_examples"
+    return run_dir(run_id) / folder / dimension / f"{safe}.jsonl"
 
 
 def write_violations(
-    run_id: str, dimension: str, rule_id: str, violations: list[Violation]
+    run_id: str, dimension: str, rule_id: str, violations: list[Violation], validity: str = "invalid"
 ) -> None:
     """Written as the rule executes, never regenerated on request."""
-    path = violations_path(run_id, dimension, rule_id)
+    path = violations_path(run_id, dimension, rule_id, validity)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fh:
         for violation in violations:
@@ -204,6 +205,7 @@ def clear_violations(run_id: str) -> None:
     new one would keep serving the old selection's examples.
     """
     shutil.rmtree(run_dir(run_id) / "violations", ignore_errors=True)
+    shutil.rmtree(run_dir(run_id) / "valid_examples", ignore_errors=True)
 
 
 def clear_reports(run_id: str) -> None:
@@ -222,9 +224,9 @@ def clear_reports(run_id: str) -> None:
 
 
 def read_violations(
-    run_id: str, dimension: str, rule_id: str, limit: int = 10
+    run_id: str, dimension: str, rule_id: str, limit: int = 10, validity: str = "invalid"
 ) -> list[dict]:
-    path = violations_path(run_id, dimension, rule_id)
+    path = violations_path(run_id, dimension, rule_id, validity)
     if not path.exists():
         return []
     out: list[dict] = []

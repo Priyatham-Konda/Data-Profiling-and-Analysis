@@ -25,6 +25,7 @@ const SEVERITY_TEXT = {
 // own document listener underneath. Without that, pressing Escape once would
 // close both layers at the same time instead of just this one.
 function RuleExamplesOverlay({ runId, dimensionKey, rule, onClose }) {
+  const [validity, setValidity] = useState('invalid');
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const panelRef = useRef(null);
@@ -36,7 +37,10 @@ function RuleExamplesOverlay({ runId, dimensionKey, rule, onClose }) {
   useEffect(() => {
     let cancelled = false;
 
-    getRuleExamples(runId, dimensionKey, rule.id).then(
+    setData(null);
+    setError(null);
+
+    getRuleExamples(runId, dimensionKey, rule.id, 10, validity).then(
       (result) => {
         if (!cancelled) setData(result);
       },
@@ -48,7 +52,7 @@ function RuleExamplesOverlay({ runId, dimensionKey, rule, onClose }) {
     return () => {
       cancelled = true;
     };
-  }, [runId, dimensionKey, rule.id]);
+  }, [runId, dimensionKey, rule.id, validity]);
 
   useEffect(() => {
     openerRef.current = document.activeElement;
@@ -133,9 +137,34 @@ function RuleExamplesOverlay({ runId, dimensionKey, rule, onClose }) {
 
         {data && (
           <>
+            <div className="mb-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setValidity('invalid')}
+                className={`rounded-[var(--radius-control)] px-3 py-1.5 text-sm font-medium transition ${
+                  validity === 'invalid'
+                    ? 'bg-ink text-surface'
+                    : 'bg-surface text-ink-2 hover:bg-ink/5'
+                }`}
+              >
+                Invalid records
+              </button>
+              <button
+                type="button"
+                onClick={() => setValidity('valid')}
+                className={`rounded-[var(--radius-control)] px-3 py-1.5 text-sm font-medium transition ${
+                  validity === 'valid'
+                    ? 'bg-ink text-surface'
+                    : 'bg-surface text-ink-2 hover:bg-ink/5'
+                }`}
+              >
+                Valid records
+              </button>
+            </div>
+            
             <p className="text-sm text-ink-2">
               Showing <span className="font-mono">{data.examples.length}</span> of{' '}
-              <span className="font-mono">{formatCount(data.total)}</span> failing records.
+              <span className="font-mono">{formatCount(data.total)}</span> {validity === 'invalid' ? 'failing' : 'passing'} records.
             </p>
 
             <table className="mt-4 w-full text-sm">
@@ -163,7 +192,9 @@ function RuleExamplesOverlay({ runId, dimensionKey, rule, onClose }) {
                   >
                     <td className="py-3 pr-6 font-mono text-ink-3">{formatCount(example.row)}</td>
                     <td className="py-3 pr-6 font-mono text-ink">{example.column}</td>
-                    <td className="py-3 pr-6 font-mono text-critical">{example.value}</td>
+                    <td className={`py-3 pr-6 font-mono ${validity === 'invalid' ? 'text-critical' : 'text-ink'}`}>
+                      {example.value}
+                    </td>
                     <td className="py-3 text-ink-2">{example.reason}</td>
                   </tr>
                 ))}

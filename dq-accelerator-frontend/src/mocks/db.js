@@ -107,6 +107,38 @@ function seeded({ id, file, status, error, minutesAgo }) {
 
 const runs = [
   seeded({ id: 'run_240118', file: 'customer_master_2024.csv', status: STATUS.COMPLETED, minutesAgo: 14 }),
+  {
+    id: 'run_sf_1',
+    file: 'Acme Corporation · Account',
+    assessmentId: 'asm_sf_1',
+    source: { type: 'salesforce', orgName: 'Acme Corporation', object: 'Account', label: 'Account' },
+    sourceRecordCount: 5790,
+    willFail: false,
+    notAssessedDimensions: [],
+    status: STATUS.COMPLETED,
+    createdAt: new Date(Date.now() - 40 * 60_000).toISOString(),
+    startedAt: Date.now() - 40 * 60_000,
+    records: 5790,
+    sampled: false,
+    cdes: 8,
+    cdeOverridden: false,
+  },
+  {
+    id: 'run_sf_2',
+    file: 'Acme Corporation · Contact',
+    assessmentId: 'asm_sf_1',
+    source: { type: 'salesforce', orgName: 'Acme Corporation', object: 'Contact', label: 'Contact' },
+    sourceRecordCount: 1500,
+    willFail: false,
+    notAssessedDimensions: [],
+    status: STATUS.COMPLETED,
+    createdAt: new Date(Date.now() - 40 * 60_000).toISOString(),
+    startedAt: Date.now() - 40 * 60_000,
+    records: 1500,
+    sampled: false,
+    cdes: 6,
+    cdeOverridden: false,
+  },
   seeded({ id: 'run_240117', file: 'transactions_q3.csv', status: STATUS.COMPLETED, minutesAgo: 68 }),
   seeded({
     id: 'run_240116',
@@ -798,18 +830,23 @@ export function dimensionDetail(run, key) {
 
 // Up to `limit` concrete example rows that failed a single rule, plus the
 // total failing count so the UI can say "10 of 5,136".
-export function ruleExamples(run, key, ruleId, limit = MAX_RULE_EXAMPLES) {
+export function ruleExamples(run, key, ruleId, limit = MAX_RULE_EXAMPLES, validity = 'invalid') {
   const rules = buildRuleStats(run, key);
   const index = rules?.findIndex((rule) => rule.id === ruleId) ?? -1;
   if (!rules || index === -1) return null;
 
   const rule = rules[index];
-  const total = Math.max(1, Math.round((1 - rule.passRate) * run.records));
+  const failTotal = Math.max(1, Math.round((1 - rule.passRate) * run.records));
+  const passTotal = run.records - failTotal;
+  const total = validity === 'valid' ? passTotal : failTotal;
   const count = Math.min(limit, MAX_RULE_EXAMPLES, total);
 
-  const templates = EXAMPLE_TEMPLATES[key]?.[index] ?? [
-    { column: '(value)', value: '(invalid)', reason: 'Fails this rule' },
-  ];
+  let templates;
+  if (validity !== 'valid') {
+    templates = EXAMPLE_TEMPLATES[key]?.[index] ?? [
+      { column: '(value)', value: '(invalid)', reason: 'Fails this rule' },
+    ];
+  }
 
   // Distinct, ascending row numbers so the table reads like a real scan of the file.
   const rand = rng(hash(`${run.id}:${ruleId}`));
@@ -818,10 +855,24 @@ export function ruleExamples(run, key, ruleId, limit = MAX_RULE_EXAMPLES) {
     rows.add(1 + Math.floor(rand() * run.records));
   }
 
-  const examples = [...rows].sort((a, b) => a - b).map((row, i) => ({
-    row,
-    ...templates[i % templates.length],
-  }));
+  const profileColumns = runProfile(run).columns;
+
+  const examples = [...rows].sort((a, b) => a - b).map((row, i) => {
+    let exampleData;
+    if (validity === 'valid') {
+      const colName = rule.column || profileColumns[0]?.name || '(value)';
+      const ruleCol = profileColumns.find((c) => c.name === colName);
+      const semanticType = ruleCol ? ruleCol.semanticType : 'free_text';
+      exampleData = {
+        column: colName,
+        value: sampleFor(semanticType, rand, i + row),
+        reason: 'Passed'
+      };
+    } else {
+      exampleData = templates[i % templates.length];
+    }
+    return { row, ...exampleData };
+  });
 
   return { ruleId, ruleName: rule.name, passRate: rule.passRate, total, examples };
 }

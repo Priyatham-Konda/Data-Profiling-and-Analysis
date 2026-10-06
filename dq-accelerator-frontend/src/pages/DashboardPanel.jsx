@@ -220,6 +220,7 @@ export function DashboardPanel() {
         kindLabel: 'File',
         label: run.file,
         overall: run.overall,
+        createdAt: run.createdAt,
       })),
     ...(assessments ?? [])
       .filter((a) => a.status === STATUS.COMPLETED)
@@ -230,6 +231,7 @@ export function DashboardPanel() {
         kindLabel: `Salesforce · ${a.objects} objects`,
         label: a.name,
         overall: a.overall,
+        createdAt: a.createdAt,
       })),
   ];
 
@@ -263,7 +265,10 @@ export function DashboardPanel() {
     };
   }, [detailKey]);
 
-  const visible = scoredItems.filter((item) => filter === 'all' || item.kind === filter);
+  const visible = scoredItems
+    .filter((item) => filter === 'all' || item.kind === filter)
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+    .slice(0, 5);
   const sorted = [...visible].sort((a, b) => {
     if (sort === 'name') return a.label.localeCompare(b.label);
     return sort === 'lowest' ? a.overall - b.overall : b.overall - a.overall;
@@ -297,7 +302,7 @@ export function DashboardPanel() {
     <div className="px-10 py-9">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-extrabold tracking-tight">Dashboard</h1>
+          <h1 className="text-2xl font-extrabold tracking-tight">Showing your 5 most recent results</h1>
           <p className="mt-1 text-sm text-ink-2">
             Every scored result on one scale, out of 100. Dashed lines mark the 70 and 90 band
             thresholds.

@@ -450,7 +450,7 @@ def _evaluate_and_score(
         _report(run_id, "Evaluating", _fraction(seen, total_rows, sample_every))
 
     rule_ctx.pop("_chunk", None)
-    results, violations = executor.finalise()
+    results, violations, valid_examples = executor.finalise()
     _report(run_id, "Evaluating", 1.0)
     _check_cancelled(ctx)
 
@@ -465,8 +465,16 @@ def _evaluate_and_score(
         result = results.get(rule_id)
         if result and rule_violations:
             artifacts.write_violations(
-                run_id, result.dimension, rule_id, rule_violations
+                run_id, result.dimension, rule_id, rule_violations, validity="invalid"
             )
+
+    for rule_id, rule_valid in valid_examples.items():
+        result = results.get(rule_id)
+        if result and rule_valid:
+            artifacts.write_violations(
+                run_id, result.dimension, rule_id, rule_valid, validity="valid"
+            )
+
 
     scores, overall, not_assessed = aggregate(results, not_assessed)
 

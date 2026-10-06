@@ -37,6 +37,7 @@ class RuleExecutor:
             for rule in rules
         }
         self.violations: dict[str, list[Violation]] = {rule.id: [] for rule in rules}
+        self.valid_examples: dict[str, list[Violation]] = {rule.id: [] for rule in rules}
         self.errors: dict[str, str] = {}
 
         # Instantiate stateful checks once for the whole run.
@@ -90,8 +91,25 @@ class RuleExecutor:
                     )
                 )
 
+        # Capture valid examples too.
+        bucket_valid = self.valid_examples[rule.id]
+        remaining_valid = self.example_cap - len(bucket_valid)
+        passed = evaluated & ~failed
+        if remaining_valid > 0 and passed.any():
+            passing_idx = passed[passed].index[:remaining_valid]
+            for idx in passing_idx:
+                raw = series.loc[idx]
+                bucket_valid.append(
+                    Violation(
+                        row=int(rows.loc[idx]) if idx in rows.index else int(idx),
+                        column=rule.column,
+                        value=_display(raw),
+                        reason="Passed",
+                    )
+                )
+
     # ----------------------------------------------------------------------
-    def finalise(self) -> tuple[dict[str, RuleResult], dict[str, list[Violation]]]:
+    def finalise(self) -> tuple[dict[str, RuleResult], dict[str, list[Violation]], dict[str, list[Violation]]]:
         for rule in self.rules:
             if rule.id in self.errors or kind_of(rule.check) != "stateful":
                 continue
@@ -119,8 +137,9 @@ class RuleExecutor:
         for rid in empty:
             self.results.pop(rid)
             self.violations.pop(rid, None)
+            self.valid_examples.pop(rid, None)
 
-        return self.results, self.violations
+        return self.results, self.violations, self.valid_examples
 
 
 def _display(value: object) -> str:

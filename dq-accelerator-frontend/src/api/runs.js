@@ -73,10 +73,10 @@ export function getRunProfile(id) {
 
 // Lazy, per-rule: only fetched once a rule is opened in the drawer, never
 // preloaded alongside the rest of the dimension.
-export function getRuleExamples(id, dimensionKey, ruleId, limit = 10) {
+export function getRuleExamples(id, dimensionKey, ruleId, limit = 10, validity = 'invalid') {
   return fetchJson(
     `/runs/${encodeURIComponent(id)}/dimensions/${encodeURIComponent(dimensionKey)}` +
-      `/rules/${encodeURIComponent(ruleId)}/examples?limit=${limit}`,
+      `/rules/${encodeURIComponent(ruleId)}/examples?limit=${limit}&validity=${encodeURIComponent(validity)}`,
   );
 }
 

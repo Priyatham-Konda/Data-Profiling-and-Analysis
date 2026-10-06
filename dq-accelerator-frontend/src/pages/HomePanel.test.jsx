@@ -114,7 +114,7 @@ describe('Home main panel', () => {
     expect(screen.getByRole('link', { name: /download summary/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /in-depth report/i })).toBeInTheDocument();
     // Seven dimension tiles, each a button (keyboard-reachable).
-    expect(screen.getAllByTitle(/double-click for rule detail/i)).toHaveLength(7);
+    expect(screen.getAllByTitle(/click for rule detail/i)).toHaveLength(7);
     // Bands are derived, not stored.
     expect(screen.getAllByText('Healthy')).toHaveLength(2);
     expect(screen.getAllByText('Critical')).toHaveLength(2);

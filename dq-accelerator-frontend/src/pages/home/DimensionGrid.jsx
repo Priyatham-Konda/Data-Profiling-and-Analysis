@@ -11,22 +11,12 @@ function DimensionTile({ label, score, reason, onOpen, interactive }) {
   // as a fake 0 score with a critical-red bar.
   const notAssessed = score === null || score === undefined;
 
-  // Mouse opens on double-click, per the spec. A double-click is not reachable
-  // from a keyboard, so Enter/Space on the focused tile opens it too -- handled
-  // via keydown rather than click, so a single mouse click still does nothing.
-  function handleKeyDown(event) {
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      onOpen();
-    }
-  }
-
   // A read-only tile (a revision-5 assessment's overall grid, which has no
   // dimension drawer of its own) is a plain block, not a button that does
   // nothing when pressed.
   const Tag = interactive ? 'button' : 'div';
   const interactionProps = interactive
-    ? { type: 'button', onDoubleClick: onOpen, onKeyDown: handleKeyDown, title: 'Double-click for rule detail' }
+    ? { type: 'button', onClick: onOpen, title: 'Click for rule detail' }
     : {};
 
   return (
@@ -71,7 +61,7 @@ export function DimensionGrid({ scores, notAssessed = {}, onOpenDimension, inter
     <section className="mt-7">
       <div className="flex items-baseline justify-between">
         <h2 className="text-sm font-semibold text-ink">Dimensions</h2>
-        {interactive && <p className="text-xs text-ink-3">Double-click a tile for rule detail</p>}
+        {interactive && <p className="text-xs text-ink-3">Click a tile for rule detail</p>}
       </div>
 
       <div className="mt-3 grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4">

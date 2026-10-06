@@ -191,6 +191,7 @@ def listing() -> list[dict]:
         item: dict[str, Any] = {
             "id": record["id"], "name": record["name"],
             "status": status, "objects": record["objects"],
+            "createdAt": record.get("created_at"),
         }
         if status == "completed" and record["overall"] is not None:
             item["overall"] = record["overall"]

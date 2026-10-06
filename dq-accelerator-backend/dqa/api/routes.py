@@ -298,6 +298,7 @@ async def get_examples(
     dimension: str,
     rule_id: str,
     limit: int = Query(10, ge=1, le=config.EXAMPLE_CAP),
+    validity: str = Query("invalid", regex="^(valid|invalid)$")
 ) -> Any:
     results = artifacts.read_results(run_id)
     if results is None:
@@ -312,12 +313,15 @@ async def get_examples(
             f"Rule '{rule_id}' was not evaluated for {dimension} in this assessment.",
         )
 
-    examples = artifacts.read_violations(run_id, dimension, rule_id, limit=limit)
+    examples = artifacts.read_violations(run_id, dimension, rule_id, limit=limit, validity=validity)
+    
+    total = rule.get("evaluated", 0) - rule.get("failed", 0) if validity == "valid" else rule.get("failed", 0)
+
     return {
         "ruleId": rule_id,
         "ruleName": rule.get("rule_name"),
         "passRate": round(rule.get("passRate", 1.0), 4),
-        "total": rule.get("failed", 0),
+        "total": total,
         "examples": examples,
     }
 
