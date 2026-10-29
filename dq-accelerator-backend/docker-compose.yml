@@ -10,6 +10,8 @@ services:
       DQA_RETENTION_DAYS: "7"
       # The Vite dev server origin. Add the deployed frontend origin here too.
       DQA_CORS_ORIGINS: "http://localhost:5173,http://localhost:3000"
+      # Set to "true" once this is served over https (dqa/auth/, README).
+      DQA_COOKIE_SECURE: "false"
     volumes:
       - dqa-data:/data
       # Rule packs mounted read-only so they can be edited without a rebuild.

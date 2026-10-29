@@ -2,24 +2,26 @@
 
 Source-agnostic. The request names a `source.type`; the matching system
 under dqa/connectors/ validates the selection and returns the plan, and
-dqa/assessments.py runs it.
+dqa/assessments.py runs it. An assessment belongs to the user who started it;
+require_owner on the router answers 404 for anyone else's.
 """
 from __future__ import annotations
 
 import re
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 from .. import assessments, config, connectors
+from ..auth import current_user, require_owner
 from ..connectors import ConnectorError
 from ..report.renderer import render_assessment_report
 from ..store import artifacts, registry
 from . import downloads
 
-router = APIRouter(tags=["assessments"])
+router = APIRouter(tags=["assessments"], dependencies=[Depends(require_owner)])
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -37,7 +39,7 @@ class CdeSelections(BaseModel):
 
 
 @router.post("/assessments", status_code=201)
-def create_assessment(payload: AssessmentRequest) -> Any:
+def create_assessment(payload: AssessmentRequest, user: dict = Depends(current_user)) -> Any:
     objects = [name.strip() for name in payload.objects]
     if not objects:
         return _error(400, "Choose at least one object to assess.")
@@ -54,15 +56,15 @@ def create_assessment(payload: AssessmentRequest) -> Any:
     assessment_id = assessments.new_id()
     try:
         system = connectors.source_for(str(payload.source.get("type", "")))
-        plan = system.plan(payload.source, objects, assessment_id)
+        plan = system.plan(payload.source, objects, assessment_id, owner_id=user["id"])
     except ConnectorError as exc:
         return JSONResponse(status_code=exc.http_status, content=exc.to_api())
-    return assessments.start(assessment_id, plan)
+    return assessments.start(assessment_id, plan, owner_id=user["id"])
 
 
 @router.get("/assessments")
-def list_assessments() -> Any:
-    return assessments.listing()
+def list_assessments(user: dict = Depends(current_user)) -> Any:
+    return assessments.listing(user["id"])
 
 
 @router.get("/assessments/{assessment_id}")

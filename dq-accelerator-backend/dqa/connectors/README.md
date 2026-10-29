@@ -25,7 +25,7 @@ Each system folder contains:
 
 | Module | Responsibility |
 | --- | --- |
-| `source.py` | `plan(source, objects, assessment_id)` — validate a selection and return an `AssessmentPlan` (`base.py`) |
+| `source.py` | `plan(source, objects, assessment_id, owner_id)` — validate a selection and return an `AssessmentPlan` (`base.py`). A source belonging to another user is refused exactly as if it didn't exist |
 | `routes.py` | The system's own endpoints, such as connecting and listing objects |
 | anything else | The system's internals, named for what they do |
 

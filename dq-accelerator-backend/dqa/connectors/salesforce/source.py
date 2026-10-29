@@ -19,7 +19,9 @@ from .connections import STORE, Connection
 from .extract import extract_object
 
 
-def plan(source: dict, objects: list[str], assessment_id: str) -> AssessmentPlan:
+def plan(
+    source: dict, objects: list[str], assessment_id: str, owner_id: str
+) -> AssessmentPlan:
     """Validate the selection, reserve the connection, and describe the work.
 
     Raises ConnectorError for anything the user must fix. On success the
@@ -31,7 +33,7 @@ def plan(source: dict, objects: list[str], assessment_id: str) -> AssessmentPlan
             "invalid_source", "source.connectionId is required.", http_status=400
         )
 
-    connection = STORE.claim(connection_id, assessment_id)
+    connection = STORE.claim(connection_id, assessment_id, owner_id)
     try:
         known = catalogue.labels(_sobjects(connection))
         unknown = [name for name in objects if name not in known]

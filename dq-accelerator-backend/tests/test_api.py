@@ -30,6 +30,11 @@ def client(tmp_path_factory):
     from dqa.api.app import create_app
 
     with TestClient(create_app()) as test_client:
+        # Every endpoint but /auth needs a session; the client keeps the cookie.
+        test_client.user = test_client.post("/api/auth/signup", json={
+            "name": "API Tests", "email": "api-tests@example.com",
+            "password": "correct horse battery",
+        }).json()
         yield test_client
 
 
@@ -484,7 +489,7 @@ class TestCdeConfirmation:
         from dqa.store import artifacts, registry
 
         run_id = "run_mid_profiling"
-        registry.create(run_id, "in_progress.csv")
+        registry.create(run_id, "in_progress.csv", client.user["id"])
         artifacts.ensure(run_id)
         artifacts.write_meta(run_id, {"id": run_id, "status": "processing",
                                       "stage": "Profiling", "stageIndex": 1})

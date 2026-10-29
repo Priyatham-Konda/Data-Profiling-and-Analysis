@@ -6,7 +6,7 @@ import os
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -15,6 +15,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from .. import config
 from ..store import registry
 from .. import connectors
+from ..auth import current_user
+from ..auth.routes import router as auth_router
 from .assessment_routes import router as assessment_router
 from .routes import router
 
@@ -57,11 +59,15 @@ def create_app() -> FastAPI:
     )
 
     prefix = os.environ.get("DQA_API_PREFIX", "/api")
-    app.include_router(router, prefix=prefix)
-    app.include_router(assessment_router, prefix=prefix)
+    # /auth is the only open door. Everything else answers 401 without a
+    # session; which user owns what is checked on each router (dqa/auth/).
+    app.include_router(auth_router, prefix=prefix)
+    signed_in = [Depends(current_user)]
+    app.include_router(router, prefix=prefix, dependencies=signed_in)
+    app.include_router(assessment_router, prefix=prefix, dependencies=signed_in)
     # Each external system mounts its own endpoints (dqa/connectors/<system>/).
     for system_router in connectors.routers():
-        app.include_router(system_router, prefix=prefix)
+        app.include_router(system_router, prefix=prefix, dependencies=signed_in)
 
     @app.get("/health")
     def health() -> dict:

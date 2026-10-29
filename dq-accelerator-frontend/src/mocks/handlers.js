@@ -19,6 +19,7 @@ import {
   validateProfileAccess,
   validateUploadFile,
 } from './db';
+import * as auth from './auth';
 import { buildReportPdf } from './report';
 import * as sfdc from './salesforce';
 import { buildZip } from './zip';
@@ -29,7 +30,44 @@ function rejectionResponse({ status, errorCode, error }) {
   return HttpResponse.json(errorCode ? { errorCode, error } : { error }, { status });
 }
 
+// Signs in by setting the mock session cookie -- MSW writes a mocked
+// Set-Cookie to document.cookie, and hands it back to later resolvers.
+function signedIn(user, status = 200) {
+  return HttpResponse.json(user, { status, headers: { 'Set-Cookie': auth.sessionCookie(user) } });
+}
+
 export const handlers = [
+  // --- Accounts (revision 6) -------------------------------------------------
+  http.get(url('/auth/me'), async ({ cookies }) => {
+    await delay(80);
+    const user = auth.userFromSession(cookies[auth.MOCK_SESSION_COOKIE]);
+    if (!user) return HttpResponse.json({ error: 'Sign in to continue.' }, { status: 401 });
+    return HttpResponse.json(user);
+  }),
+
+  http.post(url('/auth/signup'), async ({ request }) => {
+    await delay(300);
+    const { user, rejection } = auth.signUp(await request.json());
+    if (rejection) return rejectionResponse(rejection);
+    return signedIn(user, 201);
+  }),
+
+  http.post(url('/auth/login'), async ({ request }) => {
+    await delay(300);
+    const { user, rejection } = auth.signIn(await request.json());
+    if (rejection) return rejectionResponse(rejection);
+    return signedIn(user);
+  }),
+
+  http.post(url('/auth/logout'), async () => {
+    await delay(80);
+    return new HttpResponse(null, {
+      status: 204,
+      headers: { 'Set-Cookie': auth.clearedSessionCookie() },
+    });
+  }),
+
+  // --- Runs ------------------------------------------------------------------
   http.get(url('/runs'), async ({ request }) => {
     await delay(120);
     // Revision 5: object runs belong to assessments and are listed there;

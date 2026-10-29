@@ -228,6 +228,26 @@ SF_SUGGESTED_OBJECTS = [
     "Campaign", "Contract", "Order", "Product2", "Asset",
 ]
 
+# --------------------------------------------------------------------------
+# Accounts and sessions (dqa/auth/)
+# --------------------------------------------------------------------------
+# People sign themselves up with an email and password, and every run,
+# assessment and Salesforce connection belongs to the account that created
+# it. The session travels in an HttpOnly cookie, not an Authorization
+# header: the report and data downloads are plain <a href download> links,
+# which can't attach a header (API_CONTRACT.md, GET /runs/{id}/report).
+SESSION_COOKIE = "dqa_session"
+SESSION_DAYS = int(os.environ.get("DQA_SESSION_DAYS", "7"))
+# Must be "true" whenever the API is served over https. Off by default only
+# so that plain http://localhost works in development.
+COOKIE_SECURE = os.environ.get("DQA_COOKIE_SECURE", "false").lower() == "true"
+# "lax" works while the frontend and the API share a site -- localhost:5173
+# and localhost:8000 do, as do app.example.com and api.example.com. A
+# frontend on a different site needs "none", which browsers accept only
+# together with DQA_COOKIE_SECURE=true.
+COOKIE_SAMESITE = os.environ.get("DQA_COOKIE_SAMESITE", "lax").lower()
+PASSWORD_MIN_LENGTH = 8
+
 MAX_WORKERS = int(os.environ.get("DQA_MAX_WORKERS", "2"))
 RETENTION_DAYS = int(os.environ.get("DQA_RETENTION_DAYS", "7"))
 

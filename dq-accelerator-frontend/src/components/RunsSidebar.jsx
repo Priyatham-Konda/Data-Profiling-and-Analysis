@@ -4,13 +4,15 @@ import { STATUS } from '@/api/constants';
 import { getAssessment } from '@/api/salesforce';
 import { formatScore } from '@/lib/format';
 import { bandText } from '@/lib/band';
+import { AuthContext } from './AuthProvider';
 import { RunsContext } from './RunsProvider';
 import logoUrl from '@/assets/dataskate-logo.png';
 
 // This file is the whole left-hand sidebar, built bottom-up:
 // StatusDot -> Badge -> RunListItem -> AssessmentObjects -> SidebarSection ->
-// ConfirmDialog -> RunsSidebar. None of them are used anywhere else, so they
-// stay private to this file instead of each having its own.
+// ConfirmDialog -> AccountFooter -> RunsSidebar. None of them are used
+// anywhere else, so they stay private to this file instead of each having
+// its own.
 
 // The only place a run status is mapped to a colour. awaiting_cdes is
 // deliberately solid accent (not pulsing amber like processing) -- pulsing
@@ -384,6 +386,60 @@ function ConfirmDialog({ title, body, isPending, onConfirm, onCancel, confirmLab
   );
 }
 
+function initialsOf(name) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((word) => word[0].toUpperCase())
+    .join('');
+}
+
+// Who is signed in, and the way out. Renders nothing without a signed-in
+// user -- which is also how the sidebar's own tests mount it, with no
+// AuthProvider around them.
+function AccountFooter() {
+  const auth = useContext(AuthContext);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  if (!auth?.user) return null;
+
+  const { user, signOut } = auth;
+
+  function handleSignOut() {
+    setIsSigningOut(true);
+    // No reset afterwards: once the user is cleared, RequireAuth replaces the
+    // whole shell with the sign-in page and this component is gone.
+    signOut();
+  }
+
+  return (
+    <div className="flex items-center gap-3 border-t border-border px-5 py-4">
+      <span
+        aria-hidden="true"
+        className="flex size-8 shrink-0 items-center justify-center rounded-full bg-ink text-[11px] font-bold text-white"
+      >
+        {initialsOf(user.name)}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-semibold text-ink" title={user.name}>
+          {user.name}
+        </p>
+        <p className="truncate text-xs text-ink-3" title={user.email}>
+          {user.email}
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={handleSignOut}
+        disabled={isSigningOut}
+        className="shrink-0 text-xs font-semibold text-ink-2 transition hover:text-accent disabled:cursor-wait disabled:opacity-50"
+      >
+        Sign out
+      </button>
+    </div>
+  );
+}
+
 export function RunsSidebar({ selectedRunId, selectedAssessmentId }) {
   const {
     runs,
@@ -691,6 +747,8 @@ export function RunsSidebar({ selectedRunId, selectedAssessmentId }) {
           </button>
         </div>
       )}
+
+      <AccountFooter />
 
       {isBulkConfirmOpen && (
         <ConfirmDialog
