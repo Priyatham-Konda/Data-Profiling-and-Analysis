@@ -41,6 +41,11 @@ def client(tmp_path_factory):
 
     with TestClient(create_app()) as test_client:
         test_client.data_root = root
+        # Every endpoint but /auth needs a session; the client keeps the cookie.
+        test_client.user = test_client.post("/api/auth/signup", json={
+            "name": "Salesforce Tests", "email": "sf-tests@example.com",
+            "password": "correct horse battery",
+        }).json()
         yield test_client
 
 
@@ -673,9 +678,10 @@ class TestDataDownload:
         # Built directly rather than raced against a live download.
         from dqa.store import artifacts, registry
 
+        owner = client.user["id"]
         registry.create_assessment("asm_downloading_now", "Acme Corporation",
-                                   {"type": "salesforce"}, 1)
-        registry.create("run_downloading_now", "Acme Corporation · Account",
+                                   {"type": "salesforce"}, 1, owner)
+        registry.create("run_downloading_now", "Acme Corporation · Account", owner,
                         assessment_id="asm_downloading_now",
                         object_name="Account", object_label="Account")
         artifacts.ensure("run_downloading_now")
@@ -716,3 +722,26 @@ class TestDataDownload:
         assert response.content == original
         assert 'filename="clean.csv"' in response.headers["content-disposition"]
 
+
+
+# --------------------------------------------------------------------------
+class TestOwnership:
+    def test_a_connection_is_only_usable_by_whoever_opened_it(self, client, fake):
+        from fastapi.testclient import TestClient
+
+        connection_id = _connect(client, fake).json()["id"]
+        other = TestClient(client.app)
+        other.post("/api/auth/signup", json={
+            "name": "Someone Else", "email": "sf-other@example.com",
+            "password": "correct horse battery",
+        })
+
+        base = f"/api/salesforce/connections/{connection_id}"
+        assert other.get(base).status_code == 404
+        assert other.get(f"{base}/objects").status_code == 404
+        assert _assess(other, connection_id, ["Account"]).status_code == 404
+        assert other.delete(base).status_code == 404
+
+        # Untouched, and still the owner's to use.
+        assert client.get(base).json()["state"] == "connected"
+        assert client.get(f"{base}/objects").status_code == 200

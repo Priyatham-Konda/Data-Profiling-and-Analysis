@@ -8,10 +8,11 @@ export const RunsContext = createContext(null);
 
 /**
  * Owns everything more than one screen needs: the runs list, the upload, and
- * the delete. Mounted at the app root, which matters for upload specifically --
- * "Start assessment" navigates away immediately and unmounts UploadPanel, so a
- * request started inside that component would lose its .then() handler. Started
- * up here, it survives the navigation and can still fire the toast.
+ * the delete. Mounted once around every signed-in route (RequireAuth, in
+ * AuthProvider.jsx), which matters for upload specifically -- "Start
+ * assessment" navigates away immediately and unmounts UploadPanel, so a
+ * request started inside that component would lose its .then() handler.
+ * Started up here, it survives the navigation and can still fire the toast.
  */
 export function RunsProvider({ children }) {
   const { showToast } = useContext(ToastContext);

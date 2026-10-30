@@ -61,6 +61,8 @@ class Connection:
     closed_reason: Optional[str] = None
     assessment_id: Optional[str] = None
     sobjects: Optional[list[dict]] = field(repr=False, default=None)
+    # The user who connected. Only they can see, use or close it.
+    owner_id: Optional[str] = None
 
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -145,17 +147,21 @@ class ConnectionStore:
         with self._lock:
             self._items[connection.id] = connection
 
-    def get(self, connection_id: str) -> Optional[Connection]:
+    def get(self, connection_id: str, owner_id: str) -> Optional[Connection]:
+        """The connection, or None if it doesn't exist or isn't the owner's."""
         self.sweep()
         with self._lock:
-            return self._items.get(connection_id)
+            connection = self._items.get(connection_id)
+        if connection is None or connection.owner_id != owner_id:
+            return None
+        return connection
 
-    def claim(self, connection_id: str, assessment_id: str) -> Connection:
+    def claim(self, connection_id: str, assessment_id: str, owner_id: str) -> Connection:
         """Reserve a connection for one assessment, atomically."""
         self.sweep()
         with self._lock:
             connection = self._items.get(connection_id)
-            if connection is None:
+            if connection is None or connection.owner_id != owner_id:
                 raise ConnectorError(
                     "not_found",
                     "That Salesforce connection doesn't exist. Connect again.",
@@ -217,7 +223,9 @@ class ConnectionStore:
 STORE = ConnectionStore()
 
 
-def connect(instance_url: str, client_id: str, client_secret: str) -> Connection:
+def connect(
+    instance_url: str, client_id: str, client_secret: str, owner_id: str
+) -> Connection:
     """Exchange the credentials for a token and identify the org.
 
     Nothing is stored unless every step succeeds: a failed attempt leaves no
@@ -242,6 +250,7 @@ def connect(instance_url: str, client_id: str, client_secret: str) -> Connection
             client_id=client_id,
             client_secret=client_secret,
             access_token=issued["access_token"],
+            owner_id=owner_id,
         )
         api = connection.client(http)
         try:

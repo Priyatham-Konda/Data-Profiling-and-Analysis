@@ -1,8 +1,10 @@
 """HTTP API for runs.
 
-Implements the run endpoints of API_CONTRACT.md (revision 5). Assessments
+Implements the run endpoints of API_CONTRACT.md (revision 6). Assessments
 are in assessment_routes.py and each external system's endpoints in its own
-folder under dqa/connectors/. Every error response carries
+folder under dqa/connectors/. A run belongs to the user who uploaded it;
+require_owner on the router answers 404 for anyone else's. Every error
+response carries
 `{"error": "..."}` with a message written for a person, because the frontend
 shows that string verbatim.
 """
@@ -16,11 +18,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from .. import config
+from ..auth import current_user, require_owner
 from ..cde import detector
 from ..models import DatasetProfile
 from ..report.renderer import render_report
@@ -30,7 +33,7 @@ from .downloads import run_data_ready, run_data_response
 from .views import run_view
 
 log = logging.getLogger("dqa.api")
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_owner)])
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -47,7 +50,11 @@ def _new_run_id() -> str:
 # POST /runs
 # ==========================================================================
 @router.post("/runs", status_code=201)
-async def create_run(request: Request, file: UploadFile = File(...)) -> Any:
+async def create_run(
+    request: Request,
+    file: UploadFile = File(...),
+    user: dict = Depends(current_user),
+) -> Any:
     filename = Path(file.filename or "upload.csv").name
     extension = Path(filename).suffix.lower()
 
@@ -99,7 +106,7 @@ async def create_run(request: Request, file: UploadFile = File(...)) -> Any:
         shutil.rmtree(run_path, ignore_errors=True)
         return _error(400, "The uploaded file is empty.")
 
-    registry.create(run_id, filename)
+    registry.create(run_id, filename, owner_id=user["id"])
     artifacts.write_meta(
         run_id,
         {
@@ -122,10 +129,12 @@ async def create_run(request: Request, file: UploadFile = File(...)) -> Any:
 # GET /runs
 # ==========================================================================
 @router.get("/runs")
-async def list_runs(include: Optional[str] = Query(None)) -> Any:
+async def list_runs(
+    include: Optional[str] = Query(None), user: dict = Depends(current_user)
+) -> Any:
     # Object runs of an assessment are listed through GET /assessments, so
     # the sidebar doesn't fill with one entry per Salesforce object.
-    return registry.list_runs(include_assessment_runs=(include == "all"))
+    return registry.list_runs(user["id"], include_assessment_runs=(include == "all"))
 
 
 # ==========================================================================

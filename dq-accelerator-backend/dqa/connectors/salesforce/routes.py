@@ -3,15 +3,19 @@
 Plain `def` handlers on purpose: each makes blocking HTTP calls to
 Salesforce, and FastAPI runs sync handlers in its thread pool, so a slow org
 never stalls the event loop that serves the polling endpoints.
+
+A connection belongs to the user who opened it. Anyone else gets the same
+404 as for a connection that doesn't exist.
 """
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
+from ...auth import current_user
 from ..base import ConnectorError
 from .connections import STORE, connect
 from .source import objects_listing
@@ -41,25 +45,31 @@ class ConnectionRequest(BaseModel):
 
 
 @router.post("/connections", status_code=201)
-def create_connection(payload: ConnectionRequest) -> Any:
+def create_connection(payload: ConnectionRequest, user: dict = Depends(current_user)) -> Any:
     try:
-        connection = connect(payload.instanceUrl, payload.clientId, payload.clientSecret)
+        connection = connect(
+            payload.instanceUrl, payload.clientId, payload.clientSecret, owner_id=user["id"]
+        )
     except ConnectorError as exc:
         return _error(exc)
     return connection.to_api()
 
 
 @router.get("/connections/{connection_id}")
-def get_connection(connection_id: str) -> Any:
-    connection = STORE.get(connection_id)
+def get_connection(connection_id: str, user: dict = Depends(current_user)) -> Any:
+    connection = STORE.get(connection_id, user["id"])
     if connection is None:
         return _not_found()
     return connection.to_api()
 
 
 @router.get("/connections/{connection_id}/objects")
-def list_objects(connection_id: str, include: str | None = Query(None)) -> Any:
-    connection = STORE.get(connection_id)
+def list_objects(
+    connection_id: str,
+    include: str | None = Query(None),
+    user: dict = Depends(current_user),
+) -> Any:
+    connection = STORE.get(connection_id, user["id"])
     if connection is None:
         return _not_found()
     if connection.state != "connected":
@@ -78,8 +88,8 @@ def list_objects(connection_id: str, include: str | None = Query(None)) -> Any:
 
 
 @router.delete("/connections/{connection_id}")
-def delete_connection(connection_id: str) -> Any:
-    connection = STORE.get(connection_id)
+def delete_connection(connection_id: str, user: dict = Depends(current_user)) -> Any:
+    connection = STORE.get(connection_id, user["id"])
     if connection is None:
         return _not_found()
     if connection.state == "connected" and connection.assessment_id:

@@ -51,7 +51,7 @@ def _run(fixture_name: str, run_id: str, cde_override=None):
 
     artifacts.ensure(run_id)
     shutil.copy(FIXTURES / fixture_name, artifacts.source_path(run_id))
-    registry.create(run_id, fixture_name)
+    registry.create(run_id, fixture_name, "usr_engine_tests")
     artifacts.write_meta(run_id, {"id": run_id, "file": fixture_name,
                                   "status": "processing"})
     ctx = RunContext(
@@ -508,7 +508,7 @@ def _run_file(path, run_id: str):
 
     artifacts.ensure(run_id)
     shutil.copy(path, artifacts.source_path(run_id))
-    registry.create(run_id, path.name)
+    registry.create(run_id, path.name, "usr_engine_tests")
     artifacts.write_meta(run_id, {"id": run_id, "file": path.name,
                                   "status": "processing"})
     ctx = RunContext(
@@ -843,7 +843,7 @@ class TestResumeFromProfile:
 
         artifacts.ensure(run_id)
         shutil.copy(FIXTURES / fixture, artifacts.source_path(run_id))
-        registry.create(run_id, fixture)
+        registry.create(run_id, fixture, "usr_engine_tests")
         artifacts.write_meta(run_id, {"id": run_id, "file": fixture,
                                       "status": "processing"})
         ctx = RunContext(

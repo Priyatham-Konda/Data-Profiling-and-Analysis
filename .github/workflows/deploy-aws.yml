@@ -1,0 +1,99 @@
+name: Deploy to AWS
+
+# On every push to main: run the frontend tests, build both images, push them
+# to Amazon ECR, then have the EC2 server pull and restart them through SSM.
+# No SSH port is opened and no AWS keys are stored in GitHub -- the job signs
+# in to AWS with a short-lived OIDC token.
+#
+# Needs three repository variables (Settings > Secrets and variables >
+# Actions > Variables): AWS_REGION, AWS_DEPLOY_ROLE_ARN, EC2_INSTANCE_ID.
+# Setup: "Method 2" in the AWS deployment guide.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # the OIDC token AWS trusts
+  contents: read
+
+# Never two deploys at once; a newer push waits for the running one.
+concurrency:
+  group: deploy-aws
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dq-accelerator-frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dq-accelerator-frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Tagged twice: "latest" is what the server runs, the commit SHA is
+      # kept so any earlier build can be rolled back to.
+      - name: Build and push images
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          SHA: ${{ github.sha }}
+        run: |
+          docker build -t "$REGISTRY/dqa-api:$SHA" -t "$REGISTRY/dqa-api:latest" dq-accelerator-backend
+          docker build -t "$REGISTRY/dqa-web:$SHA" -t "$REGISTRY/dqa-web:latest" dq-accelerator-frontend
+          docker push --all-tags "$REGISTRY/dqa-api"
+          docker push --all-tags "$REGISTRY/dqa-web"
+
+      - name: Pull and restart on the server
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REGION: ${{ vars.AWS_REGION }}
+          INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+        run: |
+          # SSM runs these as root, with no HOME set: docker needs one to keep
+          # its registry login. The checkout belongs to ec2-user, so git runs
+          # as ec2-user to pick up compose-file changes.
+          params=$(jq -n --arg registry "$REGISTRY" --arg region "$REGION" '{commands: [
+            "set -e",
+            "export HOME=/root",
+            "runuser -u ec2-user -- git -C /opt/dqa pull --ff-only",
+            "cd /opt/dqa/deploy",
+            ("aws ecr get-login-password --region " + $region + " | docker login --username AWS --password-stdin " + $registry),
+            "docker compose -f docker-compose.prod.yml pull",
+            "docker compose -f docker-compose.prod.yml up -d --remove-orphans",
+            "docker image prune -f"
+          ]}')
+          command_id=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "Deploy ${GITHUB_SHA::7}" \
+            --parameters "$params" \
+            --query Command.CommandId --output text)
+          echo "SSM command $command_id"
+          # Fails the job if the server-side commands fail.
+          aws ssm wait command-executed --command-id "$command_id" --instance-id "$INSTANCE_ID" || true
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query '[Status, StandardOutputContent, StandardErrorContent]' --output text
+          status=$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" --query Status --output text)
+          test "$status" = "Success"

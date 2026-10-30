@@ -61,11 +61,13 @@ def derive_status(statuses: list[str]) -> str:
 # --------------------------------------------------------------------------
 # Starting
 # --------------------------------------------------------------------------
-def start(assessment_id: str, plan: AssessmentPlan) -> dict:
+def start(assessment_id: str, plan: AssessmentPlan, owner_id: str) -> dict:
     """Create the object runs and queue every download."""
     from . import runner
 
-    registry.create_assessment(assessment_id, plan.name, plan.source, len(plan.objects))
+    registry.create_assessment(
+        assessment_id, plan.name, plan.source, len(plan.objects), owner_id
+    )
     org = plan.source.get("orgName") or plan.name
 
     runs = []
@@ -73,7 +75,7 @@ def start(assessment_id: str, plan: AssessmentPlan) -> dict:
         run_id = _new_run_id()
         file_label = f"{org} · {obj.label}"
         artifacts.ensure(run_id)
-        registry.create(run_id, file_label, assessment_id=assessment_id,
+        registry.create(run_id, file_label, owner_id, assessment_id=assessment_id,
                         object_name=obj.name, object_label=obj.label)
         artifacts.write_meta(run_id, {
             "id": run_id, "file": file_label, "status": "processing",
@@ -183,10 +185,10 @@ def detail(assessment_id: str) -> Optional[dict]:
     return body
 
 
-def listing() -> list[dict]:
-    """The body of GET /assessments."""
+def listing(owner_id: str) -> list[dict]:
+    """The body of GET /assessments, for one user."""
     out = []
-    for record in registry.list_assessments():
+    for record in registry.list_assessments(owner_id):
         status = derive_status(record["statuses"])
         item: dict[str, Any] = {
             "id": record["id"], "name": record["name"],

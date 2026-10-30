@@ -16,7 +16,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 
 python tools/make_test_data.py --out tests/fixtures   # golden fixtures
-pytest                                                 # 182 tests
+pytest                                                 # 220 tests
 uvicorn dqa.api.app:app --reload --port 8000
 ```
 
@@ -47,13 +47,40 @@ second fails silently:
 Point the frontend at it by setting `VITE_API_BASE_URL=http://localhost:8000/api`
 in its `.env.local`. No frontend code changes are needed.
 
-Try it:
+Try it. Everything outside `/api/auth` needs a signed-in session, which
+travels in a cookie, so sign up once and let curl keep the cookie jar:
 
 ```bash
-curl -F "file=@tests/fixtures/dirty_known.csv" http://localhost:8000/api/runs
-curl http://localhost:8000/api/runs/<run_id>
-curl "http://localhost:8000/api/runs/<run_id>/report?type=in-depth" -o report.pdf
+curl -c jar -H "Content-Type: application/json" \
+     -d '{"name":"Me","email":"me@example.com","password":"longenough"}' \
+     http://localhost:8000/api/auth/signup
+curl -b jar -F "file=@tests/fixtures/dirty_known.csv" http://localhost:8000/api/runs
+curl -b jar http://localhost:8000/api/runs/<run_id>
+curl -b jar "http://localhost:8000/api/runs/<run_id>/report?type=in-depth" -o report.pdf
 ```
+
+Next time, `POST /api/auth/login` with `{"email", "password"}` instead.
+
+## Accounts
+
+People sign themselves up; there is no admin step. Every run, assessment
+and Salesforce connection belongs to whoever created it, and anyone else
+gets a 404 for it. Passwords are hashed with scrypt from the standard
+library; sessions are random tokens in an HttpOnly cookie, stored only as a
+SHA-256 hash in `runs.db`. Code: `dqa/auth/`. Contract: *Accounts
+(revision 6)* in `API_CONTRACT.md`.
+
+Two settings matter once this leaves localhost:
+
+- `DQA_COOKIE_SECURE=true` whenever the API is served over https.
+- `DQA_COOKIE_SAMESITE=none` (with `DQA_COOKIE_SECURE=true`) only if the
+  frontend is served from a different site than the API. Prefer serving
+  both from one site: under `SameSite=none` the cookie is sent on
+  cross-site requests too, so cross-site request forgery becomes a concern.
+
+Runs and assessments from before accounts existed go to the first account
+ever created, so an existing installation keeps its history. Sign up first
+yourself.
 
 ## The seven dimensions
 

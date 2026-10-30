@@ -8,6 +8,15 @@ endpoint below has a matching mock handler in `src/mocks/handlers.js`.
 Point the frontend at a real implementation of this contract by setting
 `VITE_API_BASE_URL` in `.env.local`. No frontend code changes are needed.
 
+> **Revision 6 — accounts.** People sign themselves up with a name, email
+> and password, and every endpoint except `/auth/*` now needs a signed-in
+> session — without one it answers **401**. Every run, assessment and
+> Salesforce connection belongs to the account that created it; anyone
+> else's id answers **404**, exactly as if it didn't exist, and lists only
+> ever show your own. No request or response shape changed. The session is
+> an HttpOnly cookie, so the report and data downloads keep working as plain
+> `<a href download>` links. Start at *Accounts (revision 6)*.
+>
 > **Revision 5 — Salesforce connections and multi-object assessments.**
 > A user can connect a Salesforce org, pick objects from it, and get an
 > assessment for each object plus an overall assessment across all of them,
@@ -190,6 +199,52 @@ may still deselect down to one.
 `awaiting_cdes` is the only shape with neither `scores` nor `overall`,
 because nothing has been evaluated. The three counts it does carry all come
 from Profiling, which is what lets the state exist before Evaluating runs.
+
+## Accounts (revision 6)
+
+Self sign-up with email and password. Signing up also signs you in.
+
+| Endpoint | Body | Success | Errors |
+| --- | --- | --- | --- |
+| `POST /auth/signup` | `{ name, email, password }` | `201` user, sets the session cookie | `400` blank name, invalid email, or password under 8 characters; `409` email already registered |
+| `POST /auth/login` | `{ email, password }` | `200` user, sets the session cookie | `401` email and password don't match an account |
+| `POST /auth/logout` | — | `204`, always, and the session is ended on the server | — |
+| `GET /auth/me` | — | `200` user | `401` signed out |
+
+A user is `{ "id": "usr_…", "name": "Alice Smith", "email": "alice@example.com" }`.
+Emails are compared case-insensitively and stored lowercased. A wrong
+password and an unknown email get the same `401` and message, so the form
+can't be used to find out who has an account.
+
+### The session
+
+- An opaque random token in the **`dqa_session`** cookie: `HttpOnly`,
+  `SameSite=Lax`, `Path=/`, valid for 7 days (`DQA_SESSION_DAYS`). The
+  server stores only a SHA-256 hash of it.
+- The frontend never reads it. Every `fetch()` goes out with
+  `credentials: "include"` (`src/api/client.js`), and the downloads are
+  plain anchors, which send cookies on their own. This is why it's a cookie
+  and not an `Authorization` header — see *Auth constraint* under
+  `GET /runs/{id}/report`.
+- Any `401` from any endpoint means the session is gone. The frontend
+  returns to the sign-in page from wherever it happened.
+- Over https, set `DQA_COOKIE_SECURE=true`. `SameSite=Lax` works while the
+  frontend and API share a site (`localhost:5173` and `localhost:8000` do;
+  so do `app.example.com` and `api.example.com`). A frontend on a different
+  site needs `DQA_COOKIE_SAMESITE=none` together with
+  `DQA_COOKIE_SECURE=true`.
+
+### Ownership
+
+- `GET /runs`, `GET /runs?include=all` and `GET /assessments` list only
+  the signed-in user's items.
+- Every endpoint naming a run, assessment or Salesforce connection by id
+  answers `404` when it belongs to someone else — the same `404`, with the
+  same message, as an id that doesn't exist. Never `403`.
+- `POST /assessments` with another user's `connectionId` answers `404`.
+- Runs and assessments created before revision 6 belong to the first
+  account ever created on that server, so an existing installation keeps
+  its history: whoever signs up first sees everything that was there.
 
 ## Endpoints
 

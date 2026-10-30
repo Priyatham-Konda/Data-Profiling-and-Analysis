@@ -1,0 +1,36 @@
+# Serves the built app and forwards the API to the backend container.
+#
+# SITE_ADDRESS is the public domain, e.g. dq.example.com: Caddy then gets and
+# renews a Let's Encrypt certificate on its own and redirects http to https.
+# ":80" serves plain http with no certificate -- only for a first test by IP
+# address, together with DQA_COOKIE_SECURE=false on the backend.
+{$SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	# Uploads go up to 500 MB (MAX_UPLOAD_BYTES in the backend). The headroom
+	# lets the backend answer an oversized file with its own 413 message.
+	request_body {
+		max_size 520MB
+	}
+
+	# No timeout on the response: an in-depth PDF of a large run can take a
+	# while to render.
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+
+	# The React app. Unknown paths get index.html so that client-side routes
+	# such as /login or /dashboard survive a reload.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}
