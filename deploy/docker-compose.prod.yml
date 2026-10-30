@@ -1,0 +1,53 @@
+# Production stack for ONE server: Caddy (the app + HTTPS) in front of the API.
+#
+# Run from this folder, with a .env beside it (copy .env.example):
+#
+#   docker compose -f docker-compose.prod.yml pull    # images from Amazon ECR
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Exactly one copy of the API may run: it keeps SQLite, run files and open
+# Salesforce connections on this machine.
+name: dqa
+
+services:
+  web:
+    image: ${REGISTRY:-local}/dqa-web:${IMAGE_TAG:-latest}
+    build: ../dq-accelerator-frontend
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    volumes:
+      # Certificates. Keep them: Let's Encrypt limits how often a domain can
+      # be issued a new one.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  api:
+    image: ${REGISTRY:-local}/dqa-api:${IMAGE_TAG:-latest}
+    build: ../dq-accelerator-backend
+    # No published ports: only Caddy reaches it, over the compose network.
+    environment:
+      DQA_DATA_ROOT: /data
+      DQA_LOG_LEVEL: ${DQA_LOG_LEVEL:-INFO}
+      DQA_MAX_WORKERS: ${DQA_MAX_WORKERS:-2}
+      DQA_RETENTION_DAYS: ${DQA_RETENTION_DAYS:-7}
+      DQA_SESSION_DAYS: ${DQA_SESSION_DAYS:-7}
+      DQA_COOKIE_SECURE: ${DQA_COOKIE_SECURE:-true}
+      # The app and the API share one origin behind Caddy, so no
+      # cross-origin access is needed.
+      DQA_CORS_ORIGINS: ""
+    volumes:
+      # Every upload, report and the SQLite database. Back up this disk.
+      - dqa-data:/data
+    restart: unless-stopped
+
+volumes:
+  dqa-data:
+  caddy-data:
+  caddy-config:
